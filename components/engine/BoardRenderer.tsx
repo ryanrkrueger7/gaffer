@@ -118,18 +118,34 @@ function contrastText(hex: string): string {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? '#000000' : '#ffffff';
 }
 
+// ── Shared marker props (optional editor hooks) ───────────────────────────────
+
+interface MarkerDragProps {
+  draggable?: boolean;
+  isSelected?: boolean;
+  isPending?: boolean;
+  onDragEnd?: (x: number, y: number) => void;
+}
+
 // ── Entity shapes ─────────────────────────────────────────────────────────────
 
-function PlayerMarker({ e }: { e: EntitySnapshot }) {
+function PlayerMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
   const r = e.radius ?? DEFAULT_RADIUS;
   const fill = teamFill(e.team, e.color);
   const stroke = teamStroke(e.team);
   const tc = contrastText(fill);
-  const label = e.display?.positionSlot?.toString() ?? '';
+  // Prefer drillLabel (editor-assigned) over positionSlot (pre-built docs).
+  const label = e.display?.drillLabel ?? e.display?.positionSlot?.toString() ?? '';
   const fs = label.length >= 2 ? Math.round(r * 0.75) : Math.round(r * 0.9);
 
   return (
-    <Group x={Math.round(e.x)} y={Math.round(e.y)}>
+    <Group
+      x={Math.round(e.x)} y={Math.round(e.y)}
+      draggable={draggable}
+      onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
+    >
+      {isSelected && <Circle radius={r + 4} stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />}
+      {isPending && <Circle radius={r + 4} stroke="#f59e0b" strokeWidth={2} fill="transparent" listening={false} />}
       <Circle radius={r} fill={fill} stroke={stroke} strokeWidth={1.5} />
       {label.length > 0 && (
         <Text
@@ -141,24 +157,35 @@ function PlayerMarker({ e }: { e: EntitySnapshot }) {
           width={r * 2} height={r * 2}
           align="center"
           verticalAlign="middle"
+          listening={false}
         />
       )}
     </Group>
   );
 }
 
-function ConeMarker({ e }: { e: EntitySnapshot }) {
+function ConeMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
   return (
-    <Group x={e.x} y={e.y}>
+    <Group
+      x={e.x} y={e.y}
+      draggable={draggable}
+      onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
+    >
+      {(isSelected || isPending) && <Circle radius={13} stroke={isSelected ? '#22c55e' : '#f59e0b'} strokeWidth={2} fill="transparent" listening={false} />}
       <Circle radius={9} fill="#EF4444" stroke="#DC2626" strokeWidth={2} />
       <Circle radius={4} fill="#FCA5A5" />
     </Group>
   );
 }
 
-function MinigoalMarker({ e }: { e: EntitySnapshot }) {
+function MinigoalMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
   return (
-    <Group x={e.x} y={e.y}>
+    <Group
+      x={e.x} y={e.y}
+      draggable={draggable}
+      onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
+    >
+      {(isSelected || isPending) && <Rect x={-26} y={-20} width={52} height={40} stroke={isSelected ? '#22c55e' : '#f59e0b'} strokeWidth={2} fill="transparent" listening={false} />}
       <Rect x={-20} y={-14} width={5} height={28} fill="#FFD700" />
       <Rect x={15} y={-14} width={5} height={28} fill="#FFD700" />
       <Line points={[-15, -14, 15, -14]} stroke="white" strokeWidth={2} />
@@ -166,12 +193,18 @@ function MinigoalMarker({ e }: { e: EntitySnapshot }) {
   );
 }
 
-function MannequinMarker({ e }: { e: EntitySnapshot }) {
+function MannequinMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
   const r = e.radius ?? 16;
   return (
-    <Group x={e.x} y={e.y}>
+    <Group
+      x={e.x} y={e.y}
+      draggable={draggable}
+      onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
+    >
+      {isSelected && <Circle radius={r + 4} stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />}
+      {isPending && <Circle radius={r + 4} stroke="#f59e0b" strokeWidth={2} fill="transparent" listening={false} />}
       <Circle radius={r} fill="#374151" stroke="#6B7280" strokeWidth={1.5} />
-      <Line points={[0, -r + 4, 0, r - 4]} stroke="#9CA3AF" strokeWidth={2} />
+      <Line points={[0, -r + 4, 0, r - 4]} stroke="#9CA3AF" strokeWidth={2} listening={false} />
     </Group>
   );
 }
@@ -181,14 +214,36 @@ function MannequinMarker({ e }: { e: EntitySnapshot }) {
 export interface BoardRendererProps {
   boardState: BoardState;
   stage: StageConfig;
+  // Optional editor hooks — additive, never break read-only usage.
+  onBoardPointerDown?: (x: number, y: number) => void;
+  selectedEntityId?: string | null;
+  pendingEntityId?: string | null;
+  onEntityDragEnd?: (id: string, x: number, y: number) => void;
+  /** Ball entity id — enables drag on the ball when onEntityDragEnd is provided. */
+  ballEntityId?: string;
 }
 
-export default function BoardRenderer({ boardState, stage }: BoardRendererProps) {
+export default function BoardRenderer({
+  boardState,
+  stage,
+  onBoardPointerDown,
+  selectedEntityId,
+  pendingEntityId,
+  onEntityDragEnd,
+  ballEntityId,
+}: BoardRendererProps) {
   const { entities, ball, activeAnnotations } = boardState;
+  const isDraggable = !!onEntityDragEnd;
 
   return (
     <div style={{ display: 'inline-block', verticalAlign: 'top' }}>
-      <KonvaStage width={CW} height={CH}>
+      <KonvaStage
+        width={CW} height={CH}
+        onClick={onBoardPointerDown ? (e) => {
+          const pos = e.target.getStage()?.getPointerPosition();
+          if (pos) onBoardPointerDown(pos.x, pos.y);
+        } : undefined}
+      >
         <Layer>
           {/* Field */}
           {stage.fieldExtent === 'half' ? (
@@ -201,15 +256,32 @@ export default function BoardRenderer({ boardState, stage }: BoardRendererProps)
 
           {/* Non-ball entities */}
           {entities.map(e => {
-            if (e.kind === 'player') return <PlayerMarker key={e.id} e={e} />;
-            if (e.kind === 'cone') return <ConeMarker key={e.id} e={e} />;
-            if (e.kind === 'minigoal') return <MinigoalMarker key={e.id} e={e} />;
-            if (e.kind === 'mannequin') return <MannequinMarker key={e.id} e={e} />;
+            const sel = selectedEntityId === e.id;
+            const pend = pendingEntityId === e.id;
+            const dragEnd = isDraggable
+              ? (x: number, y: number) => onEntityDragEnd!(e.id, x, y)
+              : undefined;
+            if (e.kind === 'player') return (
+              <PlayerMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+            );
+            if (e.kind === 'cone') return (
+              <ConeMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+            );
+            if (e.kind === 'minigoal') return (
+              <MinigoalMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+            );
+            if (e.kind === 'mannequin') return (
+              <MannequinMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+            );
             return null;
           })}
 
           {/* Ball */}
-          <Group x={ball.x} y={ball.y}>
+          <Group
+            x={ball.x} y={ball.y}
+            draggable={isDraggable && !!ballEntityId}
+            onDragEnd={isDraggable && ballEntityId ? (ev) => onEntityDragEnd!(ballEntityId, ev.target.x(), ev.target.y()) : undefined}
+          >
             <Circle radius={9} fill="white" stroke="#555" strokeWidth={1} />
             <Circle radius={3} fill="rgba(0,0,0,0.2)" />
           </Group>
