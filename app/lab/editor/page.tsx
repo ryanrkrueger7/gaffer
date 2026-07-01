@@ -1,7 +1,7 @@
 'use client';
 
-// Authoring surface — place entities, draw actions, play through the engine.
-// No generation, no persistence.
+// Authoring surface — place entities, draw actions by gesture, play through the engine.
+// Canvas always renders at the current playhead time t; authoring anchors new actions at t.
 
 import dynamic from 'next/dynamic';
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
@@ -17,13 +17,15 @@ import {
   RotateCcw,
   Trash2,
   ChevronDown,
-  ChevronRight as ChevronRightIcon,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
-import { useEditorStore } from '@/lib/engine/store';
+import { useEditorStore, maxActionEnd } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
-import { resolveBoardState } from '@/lib/engine/resolve';
+import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
+import type { EntitySnapshot } from '@/lib/engine/resolve';
 import type { GafferDocument, Action } from '@/lib/engine/types';
-import type { BoardRendererProps } from '@/components/engine/BoardRenderer';
+import type { BoardRendererProps, ActionOverlay } from '@/components/engine/BoardRenderer';
 
 const BoardRenderer = dynamic<BoardRendererProps>(
   () => import('@/components/engine/BoardRenderer'),
@@ -49,18 +51,17 @@ const BoardRenderer = dynamic<BoardRendererProps>(
   },
 );
 
-const HIT_RADIUS = 22; // default entity radius for click detection
+const HIT_RADIUS = 22;
+const DEFAULT_ENTITY_RADIUS = 22;
+const BALL_RADIUS = 9;
 
-// Returns the id of the entity under (x, y) at the document's initial positions,
-// or null if none. Used for edit-mode click handling (t=0, so initial = current).
-function findEntityAtPoint(doc: GafferDocument, x: number, y: number): string | null {
-  for (const e of doc.entities) {
-    if (!('initial' in e)) continue; // zones have no initial
-    const ent = e as { id: string; radius?: number; initial: { x: number; y: number } };
-    const r = ent.radius ?? HIT_RADIUS;
-    const dx = ent.initial.x - x;
-    const dy = ent.initial.y - y;
-    if (dx * dx + dy * dy <= r * r) return ent.id;
+/** Find entity id at (x,y) using resolved positions from boardState. */
+function findEntityAtPoint(entities: EntitySnapshot[], x: number, y: number): string | null {
+  for (const e of entities) {
+    const r = e.radius ?? HIT_RADIUS;
+    const dx = e.x - x;
+    const dy = e.y - y;
+    if (dx * dx + dy * dy <= r * r) return e.id;
   }
   return null;
 }
@@ -77,12 +78,12 @@ function entityLabel(doc: GafferDocument, id: string): string {
 // ── Tool bar config ───────────────────────────────────────────────────────────
 
 const TOOL_DEFS: { id: Tool; icon: React.ReactNode; title: string }[] = [
-  { id: 'select', icon: <MousePointer2 size={16} />, title: 'Select / Move (drag to reposition)' },
-  { id: 'player', icon: <UserPlus size={16} />, title: 'Place Player' },
-  { id: 'ball', icon: <Circle size={16} />, title: 'Place Ball (one per document)' },
-  { id: 'pass', icon: <ArrowRight size={16} />, title: 'Draw Pass (click source → target)' },
-  { id: 'run', icon: <Footprints size={16} />, title: 'Draw Run (click player → destination)' },
-  { id: 'carry', icon: <Move size={16} />, title: 'Draw Carry (click player → destination)' },
+  { id: 'select', icon: <MousePointer2 size={16} />, title: 'Select / Move — drag to reposition; Del to delete' },
+  { id: 'player', icon: <UserPlus size={16} />, title: 'Place Player — click empty pitch' },
+  { id: 'ball', icon: <Circle size={16} />, title: 'Place Ball — click a player to give them possession' },
+  { id: 'pass', icon: <ArrowRight size={16} />, title: 'Pass — drag ball or click target player (passer = owner at t)' },
+  { id: 'run', icon: <Footprints size={16} />, title: 'Run — drag player to destination' },
+  { id: 'carry', icon: <Move size={16} />, title: 'Carry — drag ball to destination (carrier = owner at t)' },
 ];
 
 // ── Action list row ───────────────────────────────────────────────────────────
@@ -90,13 +91,17 @@ const TOOL_DEFS: { id: Tool; icon: React.ReactNode; title: string }[] = [
 function ActionRow({
   action,
   doc,
+  isAtT,
   onUpdate,
   onDelete,
+  onSeek,
 }: {
   action: Action;
   doc: GafferDocument;
+  isAtT: boolean;
   onUpdate: (id: string, patch: { start?: number; duration?: number }) => void;
   onDelete: (id: string) => void;
+  onSeek: (t: number) => void;
 }) {
   const [startStr, setStartStr] = useState(action.start.toFixed(2));
   const [durStr, setDurStr] = useState(action.duration.toFixed(2));
@@ -131,21 +136,30 @@ function ActionRow({
         : `→ (${action.target.x.toFixed(0)},${action.target.y.toFixed(0)})`;
   } else if (action.kind === 'run' && 'x' in action.destination) {
     target = `→ (${action.destination.x.toFixed(0)},${action.destination.y.toFixed(0)})`;
+  } else if (action.kind === 'carry' && action.destination != null) {
+    target = `→ (${action.destination.x.toFixed(0)},${action.destination.y.toFixed(0)})`;
   }
 
   const inputCls =
     'w-12 bg-[#0f1f10] border border-[#2d5a30] rounded px-1 py-0.5 text-[#86efac] text-center focus:outline-none focus:border-[#22c55e] text-[11px]';
 
   return (
-    <div className="flex items-center gap-1.5 px-3 py-2 border-b border-[#1a2e1c] text-[11px]">
+    <div
+      className={[
+        'flex items-center gap-1.5 px-3 py-2 border-b border-[#1a2e1c] text-[11px] cursor-pointer',
+        isAtT ? 'bg-[#0f2010]' : 'hover:bg-[#0d1a0e]',
+      ].join(' ')}
+      onClick={() => onSeek(action.start)}
+    >
       <span className="text-[#4a7a4e] flex-shrink-0 w-3">{kindIcon}</span>
-      <span className="text-[#86efac] font-bold w-5 flex-shrink-0">{actor}</span>
+      <span className={['font-bold w-5 flex-shrink-0', isAtT ? 'text-[#22c55e]' : 'text-[#86efac]'].join(' ')}>{actor}</span>
       <span className="text-[#4a7a4e] flex-1 truncate min-w-0">{target}</span>
       <input
         className={inputCls}
         value={startStr}
         onChange={(e) => setStartStr(e.target.value)}
         onBlur={commitStart}
+        onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => { if (e.key === 'Enter') commitStart(); }}
         title="Start (s)"
       />
@@ -154,11 +168,12 @@ function ActionRow({
         value={durStr}
         onChange={(e) => setDurStr(e.target.value)}
         onBlur={commitDur}
+        onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => { if (e.key === 'Enter') commitDur(); }}
         title="Duration (s)"
       />
       <button
-        onClick={() => onDelete(action.id)}
+        onClick={(e) => { e.stopPropagation(); onDelete(action.id); }}
         className="text-[#2d5a30] hover:text-red-400 flex-shrink-0 ml-0.5"
         title="Delete action"
       >
@@ -187,9 +202,10 @@ export default function EditorPage() {
     addCarry,
     updateAction,
     deleteAction,
+    deleteEntity,
   } = useEditorStore();
 
-  // ── Playback ────────────────────────────────────────────────────────────────
+  // ── Playhead ────────────────────────────────────────────────────────────────
 
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -204,11 +220,20 @@ export default function EditorPage() {
     () => (doc.actions.length > 0
       ? Math.max(...doc.actions.map((a) => a.start + a.duration))
       : 0.1),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [doc.actions],
   );
   const totalDurationRef = useRef(totalDuration);
   totalDurationRef.current = totalDuration;
+
+  // After any new action is authored, auto-seek playhead to the new sequence end.
+  const prevActionsLenRef = useRef(doc.actions.length);
+  useEffect(() => {
+    if (doc.actions.length > prevActionsLenRef.current) {
+      tRef.current = totalDuration;
+      setT(totalDuration);
+    }
+    prevActionsLenRef.current = doc.actions.length;
+  }, [doc.actions, totalDuration]);
 
   const tick = useCallback((now: number) => {
     if (!playingRef.current) return;
@@ -226,7 +251,7 @@ export default function EditorPage() {
     }
     lastTimeRef.current = now;
     rafRef.current = requestAnimationFrame(tick);
-  }, []); // stable — all live state via refs
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -235,98 +260,295 @@ export default function EditorPage() {
     };
   }, []);
 
+  function seekTo(v: number) {
+    tRef.current = v;
+    setT(v);
+  }
+
   function play() {
     if (playingRef.current) return;
-    if (tRef.current >= totalDurationRef.current) {
-      tRef.current = 0;
-      setT(0);
-    }
+    if (tRef.current >= totalDurationRef.current) seekTo(0);
     lastTimeRef.current = null;
     playingRef.current = true;
     setPlaying(true);
     rafRef.current = requestAnimationFrame(tick);
   }
-
   function pause() {
     if (!playingRef.current) return;
     playingRef.current = false;
     setPlaying(false);
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
+    if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     lastTimeRef.current = null;
   }
+  function restart() { pause(); seekTo(0); }
 
-  function restart() {
-    pause();
-    tRef.current = 0;
-    setT(0);
+  // ── Moments (sorted distinct stops for Prev/Next) ──────────────────────────
+
+  const moments = useMemo(() => {
+    const stops = new Set<number>([0, totalDuration]);
+    for (const a of doc.actions) stops.add(a.start);
+    return Array.from(stops).sort((a, b) => a - b);
+  }, [doc.actions, totalDuration]);
+
+  const currentMomentIdx = useMemo(() => {
+    let idx = 0;
+    for (let i = 0; i < moments.length; i++) {
+      if (moments[i] <= t + 0.001) idx = i;
+    }
+    return idx;
+  }, [moments, t]);
+
+  function gotoPrev() {
+    const prev = [...moments].reverse().find((m) => m < t - 0.001);
+    if (prev !== undefined) { pause(); seekTo(prev); }
+  }
+  function gotoNext() {
+    const next = moments.find((m) => m > t + 0.001);
+    if (next !== undefined) { pause(); seekTo(next); }
   }
 
-  // Edit mode always shows t=0 (initial positions); play mode advances t.
-  const displayT = playing ? t : 0;
-  const boardState = useMemo(() => resolveBoardState(doc, displayT), [doc, displayT]);
+  // ── Board state — always rendered at t ─────────────────────────────────────
+
+  const boardState = useMemo(() => resolveBoardState(doc, t), [doc, t]);
   const ballEntityId = useMemo(
     () => doc.entities.find((e) => e.kind === 'ball')?.id,
     [doc.entities],
   );
 
-  // ── Board click ────────────────────────────────────────────────────────────
+  // Owner at current playhead t — drives possession ring and diagnostic readout.
+  const ownerAtT = useMemo(() => resolveOwnerAtT(doc, t), [doc, t]);
+  // Owner at end of authored sequence — drives authoring new ball actions.
+  const endOwner = useMemo(() => resolveOwnerAtT(doc, maxActionEnd(doc)), [doc]);
+
+  // ── Diagnostic: action path overlays ──────────────────────────────────────
+  // All endpoints derived from resolvePosition at action.start/end — never entity.initial.
+  const actionOverlays = useMemo((): ActionOverlay[] => {
+    const dir = doc.stage.direction;
+
+    // Mirror of resolve.ts ballPerimeter: places ball tangent to player perimeter.
+    function perim(cx: number, cy: number, r: number) {
+      const dist = r + BALL_RADIUS + 1;
+      return { x: cx, y: cy + (dir === 'up' ? -dist : dist) };
+    }
+    function eRadius(id: string) {
+      const e = doc.entities.find((e) => e.id === id);
+      return e?.radius ?? DEFAULT_ENTITY_RADIUS;
+    }
+
+    const result: ActionOverlay[] = [];
+    for (const a of doc.actions) {
+      const active = t >= a.start && t <= a.start + a.duration;
+
+      if (a.kind === 'pass') {
+        const passerPos = resolvePosition(doc, a.entityId, a.start);
+        const from = perim(passerPos.x, passerPos.y, eRadius(a.entityId));
+        let to: { x: number; y: number };
+        if ('entityId' in a.target) {
+          const receiverPos = resolvePosition(doc, a.target.entityId, a.start + a.duration);
+          to = perim(receiverPos.x, receiverPos.y, eRadius(a.target.entityId));
+        } else {
+          to = { x: a.target.x, y: a.target.y };
+        }
+        result.push({ id: a.id, kind: 'pass', x1: from.x, y1: from.y, x2: to.x, y2: to.y, active });
+
+      } else if (a.kind === 'run' && 'x' in a.destination) {
+        const startPos = resolvePosition(doc, a.entityId, a.start);
+        result.push({ id: a.id, kind: 'run', x1: startPos.x, y1: startPos.y, x2: a.destination.x, y2: a.destination.y, active });
+
+      } else if (a.kind === 'carry' && a.destination != null) {
+        const startPos = resolvePosition(doc, a.entityId, a.start);
+        const from = perim(startPos.x, startPos.y, eRadius(a.entityId));
+        result.push({ id: a.id, kind: 'carry', x1: from.x, y1: from.y, x2: a.destination.x, y2: a.destination.y, active });
+      }
+    }
+    return result;
+  }, [doc, t]);
+
+  // ── DIAGNOSTIC: ball-hidden-under-marker assertion ─────────────────────────
+  // If the ball's visual position is inside its owner's marker radius, the tangent
+  // offset is broken. This should never be true in correct operation.
+  const ballHidden = useMemo(() => {
+    if (!ownerAtT) return false;
+    const owner = boardState.entities.find((e) => e.id === ownerAtT);
+    if (!owner) return false;
+    const r = owner.radius ?? DEFAULT_ENTITY_RADIUS;
+    const dx = boardState.ball.x - owner.x;
+    const dy = boardState.ball.y - owner.y;
+    return dx * dx + dy * dy < r * r;
+  }, [boardState, ownerAtT]);
+
+  const hiddenWarnRef = useRef<string | null>(null);
+  useEffect(() => {
+    // DIAGNOSTIC: warn once per (t, owner) pair when ball is inside the owner's marker
+    if (ballHidden && ownerAtT) {
+      const key = `${t.toFixed(2)}|${ownerAtT}`;
+      if (hiddenWarnRef.current !== key) {
+        console.warn(`[DIAG] Ball hidden under marker: owner=${ownerAtT} t=${t.toFixed(3)}`);
+        hiddenWarnRef.current = key;
+      }
+    }
+  }, [ballHidden, ownerAtT, t]);
+
+  // ── Ghost drag line ────────────────────────────────────────────────────────
+
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+
+  const ghostLine = useMemo(() => {
+    if (!draggingId || !cursorPos) return null;
+
+    if (tool === 'run') {
+      const entity = boardState.entities.find((e) => e.id === draggingId);
+      if (!entity || entity.kind !== 'player') return null;
+      return { x1: entity.x, y1: entity.y, x2: cursorPos.x, y2: cursorPos.y };
+    }
+
+    if ((tool === 'pass' || tool === 'carry') && (draggingId === ballEntityId || draggingId === endOwner)) {
+      // Ghost line starts from the ball's current visual position (already has perimeter offset)
+      return { x1: boardState.ball.x, y1: boardState.ball.y, x2: cursorPos.x, y2: cursorPos.y };
+    }
+
+    return null;
+  }, [draggingId, cursorPos, tool, boardState, ballEntityId, endOwner]);
+
+  // ── Delete key handler ────────────────────────────────────────────────────
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (tool === 'select' && selectedEntityId && !playing) {
+        deleteEntity(selectedEntityId);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [tool, selectedEntityId, playing, deleteEntity]);
+
+  // ── Board interaction ──────────────────────────────────────────────────────
 
   function handleBoardClick(x: number, y: number) {
-    if (playing) return; // lock edits during playback
-    const hitId = findEntityAtPoint(doc, x, y);
+    if (playing) return;
+    const hitId = findEntityAtPoint(boardState.entities, x, y);
 
     switch (tool) {
       case 'select':
         setSelected(hitId);
         break;
+
       case 'player':
         if (!hitId) addPlayer(x, y);
         break;
+
       case 'ball':
-        if (!hitId) addBall(x, y);
-        break;
-      case 'pass':
-        if (!pendingSourceId) {
-          if (hitId) setPendingSource(hitId);
-        } else {
-          if (hitId && hitId !== pendingSourceId) addPass(pendingSourceId, hitId);
-          else setPendingSource(null); // re-click same or empty → cancel
+        if (!hitId || doc.entities.find((e) => e.id === hitId)?.kind !== 'ball') {
+          addBall(x, y);
         }
         break;
+
+      case 'pass':
+        if (hitId && hitId !== endOwner) {
+          const target = doc.entities.find((e) => e.id === hitId);
+          if (target?.kind === 'player') addPass(hitId);
+        }
+        break;
+
       case 'run':
         if (!pendingSourceId) {
-          if (hitId) setPendingSource(hitId);
+          if (hitId && doc.entities.find((e) => e.id === hitId)?.kind === 'player') {
+            setPendingSource(hitId);
+          }
         } else {
-          addRun(pendingSourceId, x, y);
+          addRun(pendingSourceId, x, y, tRef.current);
         }
         break;
+
       case 'carry':
-        if (!pendingSourceId) {
-          if (hitId) setPendingSource(hitId);
-        } else {
-          addCarry(pendingSourceId, x, y);
+        if (!hitId) addCarry(x, y);
+        break;
+    }
+  }
+
+  // ── Drag-to-author ────────────────────────────────────────────────────────
+
+  function handleEntityDragStart(id: string) {
+    setDraggingId(id);
+  }
+
+  function handleEntityDragEnd(id: string, x: number, y: number) {
+    setDraggingId(null);
+    setCursorPos(null);
+    if (playing) return;
+    const isBallOrOwner = id === ballEntityId || id === endOwner;
+
+    switch (tool) {
+      case 'select':
+        moveEntity(id, x, y);
+        break;
+
+      case 'run': {
+        const entity = doc.entities.find((e) => e.id === id);
+        if (entity?.kind === 'player') addRun(id, x, y, tRef.current);
+        break;
+      }
+
+      case 'pass': {
+        if (!isBallOrOwner) break;
+        const targetId = findEntityAtPoint(boardState.entities, x, y);
+        const target = targetId ? doc.entities.find((e) => e.id === targetId) : null;
+        if (targetId && target?.kind === 'player' && targetId !== endOwner) {
+          addPass(targetId);
         }
         break;
+      }
+
+      case 'carry': {
+        if (!isBallOrOwner) break;
+        const hitId = findEntityAtPoint(boardState.entities, x, y);
+        if (!hitId) addCarry(x, y);
+        break;
+      }
     }
   }
 
   // ── Sorted action list ─────────────────────────────────────────────────────
 
   const sortedActions = useMemo(
-    () => [...doc.actions]
-      .filter((a) => a.kind === 'pass' || a.kind === 'run' || a.kind === 'carry')
-      .sort((a, b) => a.start - b.start),
+    () =>
+      [...doc.actions]
+        .filter((a) => a.kind === 'pass' || a.kind === 'run' || a.kind === 'carry')
+        .sort((a, b) => a.start - b.start),
     [doc.actions],
   );
 
-  const progress = totalDuration > 0 ? (playing ? t : 0) / totalDuration : 0;
-
-  // When pendingSourceId is active, show it as pending (amber); otherwise show selectedEntityId (green).
+  // Selection/pending display
   const selId = pendingSourceId ? null : selectedEntityId;
   const pendId = pendingSourceId;
+
+  // ── Live state readout ────────────────────────────────────────────────────
+
+  const ownerLabel = useMemo(() => {
+    if (ownerAtT) return entityLabel(doc, ownerAtT);
+    const inFlight = doc.actions.some(
+      (a) => a.kind === 'pass' && t >= a.start && t <= a.start + a.duration,
+    );
+    return inFlight ? 'in flight' : 'loose';
+  }, [doc, ownerAtT, t]);
+
+  const endOwnerLabel = endOwner ? entityLabel(doc, endOwner) : null;
+
+  const toolPhrase =
+    tool === 'select' ? 'drag to reposition, Del to delete'
+    : tool === 'player' ? 'click pitch to place'
+    : tool === 'ball' ? 'click to place ball'
+    : tool === 'pass'
+      ? (endOwner ? `drag ball → player  (from: ${endOwnerLabel})` : 'no owner — place ball first')
+    : tool === 'run'
+      ? (pendingSourceId ? 'click destination' : 'drag player → destination')
+    : tool === 'carry'
+      ? (endOwner ? `drag ball → space  (from: ${endOwnerLabel})` : 'no owner — place ball first')
+    : '';
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -350,10 +572,21 @@ export default function EditorPage() {
             {icon}
           </button>
         ))}
+
+        {/* Delete button — only visible in Select mode with something selected */}
+        {tool === 'select' && selectedEntityId && (
+          <button
+            title="Delete selected entity (Del)"
+            onClick={() => deleteEntity(selectedEntityId)}
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-[#4a7a4e] hover:bg-[#2d0a0a] hover:text-red-400 cursor-pointer mt-1"
+          >
+            <Trash2 size={16} />
+          </button>
+        )}
       </div>
 
       {/* ── Center: board + controls ───────────────────────────────────────── */}
-      <div className="flex flex-col flex-1 items-center justify-start overflow-auto py-5 px-6 gap-3">
+      <div className="flex flex-col flex-1 items-center justify-start overflow-auto py-5 px-6 gap-2">
         {/* Board */}
         <BoardRenderer
           boardState={boardState}
@@ -361,18 +594,49 @@ export default function EditorPage() {
           onBoardPointerDown={handleBoardClick}
           selectedEntityId={selId}
           pendingEntityId={pendId}
-          onEntityDragEnd={playing ? undefined : moveEntity}
+          ballOwnerEntityId={ownerAtT}
+          onEntityDragEnd={playing ? undefined : handleEntityDragEnd}
+          onEntityDragStart={playing ? undefined : handleEntityDragStart}
           ballEntityId={ballEntityId}
+          actionOverlays={actionOverlays}
+          ghostLine={ghostLine}
+          ballHidden={ballHidden}
+          onBoardPointerMove={(x, y) => setCursorPos({ x, y })}
+          showBall={!!ballEntityId}
         />
 
-        {/* Progress bar */}
-        <div className="w-[800px] h-[3px] bg-[#1a3320] rounded-full overflow-hidden">
-          <div
-            className="h-full bg-[#22c55e] rounded-full"
-            style={{
-              width: `${progress * 100}%`,
-              transition: playing ? 'none' : 'width 0.05s',
-            }}
+        {/* ── Live state readout strip ──────────────────────────────────────── */}
+        <div
+          className="w-[800px] flex items-center gap-3 px-2 py-1 rounded"
+          style={{ background: '#0b1a0d', border: '1px solid #1e3a20', fontSize: 11 }}
+        >
+          <span style={{ color: '#86efac', fontWeight: 700 }}>t={t.toFixed(2)}s</span>
+          <span style={{ color: '#2d5a30' }}>/ {totalDuration.toFixed(2)}s</span>
+          <span style={{ color: '#1e3a20' }}>|</span>
+          <span style={{ color: '#4a7a4e' }}>m{currentMomentIdx + 1}/{moments.length}</span>
+          <span style={{ color: '#1e3a20' }}>|</span>
+          <span style={{ color: '#4a7a4e' }}>
+            owner: <span style={{ color: ownerAtT ? '#38bdf8' : '#6b7280' }}>{ownerLabel}</span>
+          </span>
+          <span style={{ color: '#1e3a20' }}>|</span>
+          <span style={{ color: '#4a7a4e' }}>
+            next from: <span style={{ color: endOwner ? '#fbbf24' : '#6b7280' }}>{endOwnerLabel ?? 'nobody'}</span>
+          </span>
+          <span style={{ color: '#1e3a20' }}>|</span>
+          <span style={{ color: '#f59e0b' }}>{tool}: </span>
+          <span style={{ color: '#6b7280' }}>{toolPhrase}</span>
+        </div>
+
+        {/* Scrubber */}
+        <div className="w-[800px] flex items-center gap-2">
+          <input
+            type="range"
+            min={0}
+            max={totalDuration}
+            step={0.001}
+            value={t}
+            onChange={(e) => { const v = parseFloat(e.target.value); seekTo(v); }}
+            style={{ flex: 1, accentColor: '#22c55e', cursor: 'pointer', height: 18 }}
           />
         </div>
 
@@ -380,7 +644,7 @@ export default function EditorPage() {
         <div className="w-[800px] flex items-center gap-2">
           <button
             onClick={restart}
-            title="Restart"
+            title="Restart (t=0)"
             className="w-8 h-8 rounded-md border border-[#2d5a30] bg-[#0f1f10] text-[#86efac] flex items-center justify-center hover:bg-[#1a3320] cursor-pointer flex-shrink-0"
           >
             <RotateCcw size={13} />
@@ -392,15 +656,20 @@ export default function EditorPage() {
           >
             {playing ? <Pause size={15} /> : <Play size={15} />}
           </button>
-          <span style={{ fontSize: 13, color: '#86efac', minWidth: 100, letterSpacing: '0.03em' }}>
-            {(playing ? t : 0).toFixed(2)}s{' '}
-            <span style={{ color: '#2d5a30' }}>/ {totalDuration.toFixed(2)}s</span>
-          </span>
-          {pendingSourceId && (
-            <span style={{ fontSize: 11, color: '#f59e0b', marginLeft: 8 }}>
-              {tool === 'pass' ? 'click target player' : 'click destination on pitch'}
-            </span>
-          )}
+          <button
+            onClick={gotoPrev}
+            title="Previous moment"
+            className="w-7 h-7 rounded-md border border-[#2d5a30] bg-[#0f1f10] text-[#86efac] flex items-center justify-center hover:bg-[#1a3320] cursor-pointer flex-shrink-0"
+          >
+            <ChevronLeft size={13} />
+          </button>
+          <button
+            onClick={gotoNext}
+            title="Next moment"
+            className="w-7 h-7 rounded-md border border-[#2d5a30] bg-[#0f1f10] text-[#86efac] flex items-center justify-center hover:bg-[#1a3320] cursor-pointer flex-shrink-0"
+          >
+            <ChevronRight size={13} />
+          </button>
         </div>
 
         {/* JSON debug (collapsible) */}
@@ -409,7 +678,7 @@ export default function EditorPage() {
             onClick={() => setJsonOpen((v) => !v)}
             className="flex items-center gap-1 text-[11px] text-[#2d5a30] hover:text-[#4a7a4e] cursor-pointer"
           >
-            {jsonOpen ? <ChevronDown size={11} /> : <ChevronRightIcon size={11} />}
+            {jsonOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
             document JSON
           </button>
           {jsonOpen && (
@@ -422,7 +691,6 @@ export default function EditorPage() {
 
       {/* ── Right: action list ─────────────────────────────────────────────── */}
       <div className="flex-shrink-0 w-64 border-l border-[#1e3a20] bg-[#0b1a0d] flex flex-col overflow-hidden">
-        {/* Header */}
         <div
           className="px-3 border-b border-[#1e3a20] flex items-center justify-between"
           style={{ paddingTop: 10, paddingBottom: 10, fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: '#4a7a4e' }}
@@ -430,12 +698,10 @@ export default function EditorPage() {
           <span>ACTIONS</span>
           <span style={{ fontWeight: 400, color: '#2d5a30', letterSpacing: 0 }}>start · dur</span>
         </div>
-
-        {/* Rows */}
         <div className="flex-1 overflow-y-auto">
           {sortedActions.length === 0 ? (
             <p style={{ padding: '16px 12px', fontSize: 11, color: '#2d5a30', lineHeight: 1.6 }}>
-              No actions yet.{'\n'}Use pass, run, or carry tools.
+              No actions yet. Use pass, run, or carry tools.
             </p>
           ) : (
             sortedActions.map((a) => (
@@ -443,8 +709,10 @@ export default function EditorPage() {
                 key={a.id}
                 action={a}
                 doc={doc}
+                isAtT={Math.abs(a.start - t) < 0.001}
                 onUpdate={updateAction}
                 onDelete={deleteAction}
+                onSeek={(time) => { pause(); seekTo(time); }}
               />
             ))
           )}

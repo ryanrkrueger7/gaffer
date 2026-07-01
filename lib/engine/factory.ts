@@ -133,8 +133,9 @@ export function makeCarry(opts: {
   path?: Path;
   start?: number;
   duration?: number;
+  destination?: { x: number; y: number };
 }): CarryAction {
-  return {
+  const carry: CarryAction = {
     kind: 'carry',
     id: makeId(),
     entityId: opts.entityId,
@@ -143,6 +144,8 @@ export function makeCarry(opts: {
     start: opts.start ?? 0,
     duration: opts.duration ?? 1.0,
   };
+  if (opts.destination != null) carry.destination = opts.destination;
+  return carry;
 }
 
 export function makeBeat(opts: Partial<Omit<Beat, 'id'>> = {}): Beat {

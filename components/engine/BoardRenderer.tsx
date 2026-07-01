@@ -3,7 +3,7 @@
 // The ONE unified renderer (§8): used for both static and playback modes.
 // Takes a resolved BoardState (output of resolveBoardState) and draws it via react-konva.
 
-import { Stage as KonvaStage, Layer, Rect, Circle, Line, Group, Text } from 'react-konva';
+import { Stage as KonvaStage, Layer, Rect, Circle, Line, Arrow, Group, Text } from 'react-konva';
 import type { Stage as StageConfig } from '@/lib/engine/types';
 import type { BoardState, EntitySnapshot } from '@/lib/engine/resolve';
 
@@ -118,18 +118,39 @@ function contrastText(hex: string): string {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? '#000000' : '#ffffff';
 }
 
+// ── Diagnostic action path overlay ────────────────────────────────────────────
+
+/** One overlay line per authored action — computed at t by the page, rendered here. */
+export interface ActionOverlay {
+  id: string;
+  kind: 'pass' | 'run' | 'carry';
+  x1: number; y1: number;
+  x2: number; y2: number;
+  /** True when the playhead t is within [action.start, action.start + action.duration]. */
+  active: boolean;
+}
+
+// Color palette for overlays — reuses existing dark-theme accents.
+const OVERLAY_COLOR: Record<ActionOverlay['kind'], string> = {
+  pass: '#38bdf8',   // sky — matches possession ring
+  run: '#86efac',   // light green — matches accent text
+  carry: '#fbbf24', // amber
+};
+
 // ── Shared marker props (optional editor hooks) ───────────────────────────────
 
 interface MarkerDragProps {
   draggable?: boolean;
   isSelected?: boolean;
   isPending?: boolean;
+  isOwner?: boolean;
   onDragEnd?: (x: number, y: number) => void;
+  onDragStart?: () => void;
 }
 
 // ── Entity shapes ─────────────────────────────────────────────────────────────
 
-function PlayerMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
+function PlayerMarker({ e, draggable, isSelected, isPending, isOwner, onDragEnd, onDragStart }: { e: EntitySnapshot } & MarkerDragProps) {
   const r = e.radius ?? DEFAULT_RADIUS;
   const fill = teamFill(e.team, e.color);
   const stroke = teamStroke(e.team);
@@ -142,8 +163,11 @@ function PlayerMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: E
     <Group
       x={Math.round(e.x)} y={Math.round(e.y)}
       draggable={draggable}
+      onDragStart={onDragStart}
       onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
     >
+      {/* Possession ring — shown when this player currently owns the ball */}
+      {isOwner && <Circle radius={r + 7} stroke="#38bdf8" strokeWidth={1.5} fill="transparent" listening={false} opacity={0.55} />}
       {isSelected && <Circle radius={r + 4} stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />}
       {isPending && <Circle radius={r + 4} stroke="#f59e0b" strokeWidth={2} fill="transparent" listening={false} />}
       <Circle radius={r} fill={fill} stroke={stroke} strokeWidth={1.5} />
@@ -164,11 +188,12 @@ function PlayerMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: E
   );
 }
 
-function ConeMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
+function ConeMarker({ e, draggable, isSelected, isPending, onDragEnd, onDragStart }: { e: EntitySnapshot } & MarkerDragProps) {
   return (
     <Group
       x={e.x} y={e.y}
       draggable={draggable}
+      onDragStart={onDragStart}
       onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
     >
       {(isSelected || isPending) && <Circle radius={13} stroke={isSelected ? '#22c55e' : '#f59e0b'} strokeWidth={2} fill="transparent" listening={false} />}
@@ -178,11 +203,12 @@ function ConeMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: Ent
   );
 }
 
-function MinigoalMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
+function MinigoalMarker({ e, draggable, isSelected, isPending, onDragEnd, onDragStart }: { e: EntitySnapshot } & MarkerDragProps) {
   return (
     <Group
       x={e.x} y={e.y}
       draggable={draggable}
+      onDragStart={onDragStart}
       onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
     >
       {(isSelected || isPending) && <Rect x={-26} y={-20} width={52} height={40} stroke={isSelected ? '#22c55e' : '#f59e0b'} strokeWidth={2} fill="transparent" listening={false} />}
@@ -193,12 +219,13 @@ function MinigoalMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e:
   );
 }
 
-function MannequinMarker({ e, draggable, isSelected, isPending, onDragEnd }: { e: EntitySnapshot } & MarkerDragProps) {
+function MannequinMarker({ e, draggable, isSelected, isPending, onDragEnd, onDragStart }: { e: EntitySnapshot } & MarkerDragProps) {
   const r = e.radius ?? 16;
   return (
     <Group
       x={e.x} y={e.y}
       draggable={draggable}
+      onDragStart={onDragStart}
       onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
     >
       {isSelected && <Circle radius={r + 4} stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />}
@@ -218,9 +245,26 @@ export interface BoardRendererProps {
   onBoardPointerDown?: (x: number, y: number) => void;
   selectedEntityId?: string | null;
   pendingEntityId?: string | null;
+  /** Ball owner — receives a subtle possession ring so the coach always sees who's next. */
+  ballOwnerEntityId?: string | null;
   onEntityDragEnd?: (id: string, x: number, y: number) => void;
   /** Ball entity id — enables drag on the ball when onEntityDragEnd is provided. */
   ballEntityId?: string;
+  /** Diagnostic action path overlays — computed at t by the page, rendered behind entities. */
+  actionOverlays?: ActionOverlay[];
+  /** Ghost drag line shown while an authoring gesture is in progress. */
+  ghostLine?: { x1: number; y1: number; x2: number; y2: number } | null;
+  /**
+   * DIAGNOSTIC: true when the resolved ball position is inside a player marker's radius.
+   * Outlines ball in red. The page.tsx also fires a console.warn when this is true.
+   */
+  ballHidden?: boolean;
+  /** Called on pointer move — page uses this to update ghost line cursor position. */
+  onBoardPointerMove?: (x: number, y: number) => void;
+  /** Called when an entity drag begins — page uses this to activate the ghost line. */
+  onEntityDragStart?: (id: string) => void;
+  /** When false, the ball is not rendered (no ball entity placed yet). Defaults to true. */
+  showBall?: boolean;
 }
 
 export default function BoardRenderer({
@@ -229,8 +273,15 @@ export default function BoardRenderer({
   onBoardPointerDown,
   selectedEntityId,
   pendingEntityId,
+  ballOwnerEntityId,
   onEntityDragEnd,
   ballEntityId,
+  actionOverlays,
+  ghostLine,
+  ballHidden,
+  onBoardPointerMove,
+  onEntityDragStart,
+  showBall = true,
 }: BoardRendererProps) {
   const { entities, ball, activeAnnotations } = boardState;
   const isDraggable = !!onEntityDragEnd;
@@ -243,6 +294,10 @@ export default function BoardRenderer({
           const pos = e.target.getStage()?.getPointerPosition();
           if (pos) onBoardPointerDown(pos.x, pos.y);
         } : undefined}
+        onMouseMove={onBoardPointerMove ? (e) => {
+          const pos = e.target.getStage()?.getPointerPosition();
+          if (pos) onBoardPointerMove(pos.x, pos.y);
+        } : undefined}
       >
         <Layer>
           {/* Field */}
@@ -254,6 +309,46 @@ export default function BoardRenderer({
             <PitchBlank />
           )}
 
+          {/* ── Diagnostic: authored action path overlays (behind entities) ── */}
+          {actionOverlays?.map(ov => {
+            const color = OVERLAY_COLOR[ov.kind];
+            const opacity = ov.active ? 0.85 : 0.22;
+            const sw = ov.active ? 2 : 1;
+            if (ov.kind === 'run') {
+              // Arrow for runs — directional indicator
+              return (
+                <Arrow
+                  key={ov.id}
+                  points={[ov.x1, ov.y1, ov.x2, ov.y2]}
+                  stroke={color} fill={color}
+                  strokeWidth={sw} opacity={opacity}
+                  pointerLength={8} pointerWidth={6}
+                  listening={false}
+                />
+              );
+            }
+            // Pass: solid line; Carry: dashed line
+            return (
+              <Line
+                key={ov.id}
+                points={[ov.x1, ov.y1, ov.x2, ov.y2]}
+                stroke={color} strokeWidth={sw} opacity={opacity}
+                dash={ov.kind === 'carry' ? [7, 4] : undefined}
+                listening={false}
+              />
+            );
+          })}
+
+          {/* ── Ghost drag line — shown while authoring gesture is in progress ── */}
+          {ghostLine && (
+            <Line
+              points={[ghostLine.x1, ghostLine.y1, ghostLine.x2, ghostLine.y2]}
+              stroke="white" strokeWidth={1.5} opacity={0.45}
+              dash={[5, 5]}
+              listening={false}
+            />
+          )}
+
           {/* Non-ball entities */}
           {entities.map(e => {
             const sel = selectedEntityId === e.id;
@@ -261,30 +356,37 @@ export default function BoardRenderer({
             const dragEnd = isDraggable
               ? (x: number, y: number) => onEntityDragEnd!(e.id, x, y)
               : undefined;
+            const dragStart = isDraggable && onEntityDragStart
+              ? () => onEntityDragStart(e.id)
+              : undefined;
             if (e.kind === 'player') return (
-              <PlayerMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+              <PlayerMarker key={e.id} e={e} isSelected={sel} isPending={pend} isOwner={ballOwnerEntityId === e.id} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
             );
             if (e.kind === 'cone') return (
-              <ConeMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+              <ConeMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
             );
             if (e.kind === 'minigoal') return (
-              <MinigoalMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+              <MinigoalMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
             );
             if (e.kind === 'mannequin') return (
-              <MannequinMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} />
+              <MannequinMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
             );
             return null;
           })}
 
-          {/* Ball */}
-          <Group
-            x={ball.x} y={ball.y}
-            draggable={isDraggable && !!ballEntityId}
-            onDragEnd={isDraggable && ballEntityId ? (ev) => onEntityDragEnd!(ballEntityId, ev.target.x(), ev.target.y()) : undefined}
-          >
-            <Circle radius={9} fill="white" stroke="#555" strokeWidth={1} />
-            <Circle radius={3} fill="rgba(0,0,0,0.2)" />
-          </Group>
+          {/* Ball — only rendered when a ball entity has been placed */}
+          {/* DIAGNOSTIC: stroke turns red when ball center is inside a player marker (tangent offset broken). */}
+          {showBall && (
+            <Group
+              x={ball.x} y={ball.y}
+              draggable={isDraggable && !!ballEntityId}
+              onDragStart={isDraggable && ballEntityId && onEntityDragStart ? () => onEntityDragStart(ballEntityId) : undefined}
+              onDragEnd={isDraggable && ballEntityId ? (ev) => onEntityDragEnd!(ballEntityId, ev.target.x(), ev.target.y()) : undefined}
+            >
+              <Circle radius={9} fill="white" stroke={ballHidden ? '#ef4444' : '#555'} strokeWidth={ballHidden ? 2.5 : 1} />
+              <Circle radius={3} fill="rgba(0,0,0,0.2)" />
+            </Group>
+          )}
         </Layer>
       </KonvaStage>
 

@@ -7,7 +7,6 @@ import type {
   PlayerEntity,
   BallEntity,
   ZoneEntity,
-  RunAction,
   CarryAction,
   PassAction,
   Annotation,
@@ -107,11 +106,12 @@ function ballPerimeter(
  * Returns where entity `entityId` is at time `t` (seconds).
  *
  * Default: entity.initial.
- * During a Run: eased interpolation from current position toward destination
- *   along a straight line or quadratic bezier (path.cx, path.cy).
- * After a completed Run: the run's destination.
- * Multiple chained Runs are handled in start-time order.
- * Landmark destinations are not yet resolved — they are skipped silently.
+ * During a Run: eased interpolation toward destination along straight or bezier path.
+ * During a Carry with destination: same movement semantics as a Run (Carry owns the movement
+ *   when it carries a destination — no concurrent RunAction required).
+ * After a completed movement: the destination.
+ * Multiple chained movements are handled in start-time order.
+ * Landmark destinations and Carry without destination are skipped silently.
  */
 export function resolvePosition(
   doc: GafferDocument,
@@ -121,105 +121,114 @@ export function resolvePosition(
   const entity = doc.entities.find(e => e.id === entityId);
   if (!entity || !hasInitial(entity)) return { x: 0, y: 0 };
 
-  const runs = doc.actions
-    .filter((a): a is RunAction => a.kind === 'run' && a.entityId === entityId)
-    .sort((a, b) => a.start - b.start);
+  // Collect all movement-providing actions for this entity: Runs with xy destination,
+  // and Carries that carry an explicit destination (editor-authored carries).
+  type MvSlot = { start: number; duration: number; destination: { x: number; y: number }; path: { type: string; cx?: number; cy?: number } };
+  const movements: MvSlot[] = [];
+
+  for (const a of doc.actions) {
+    if (a.entityId !== entityId) continue;
+    if (a.kind === 'run' && 'x' in a.destination) {
+      movements.push({ start: a.start, duration: a.duration, destination: a.destination, path: a.path });
+    } else if (a.kind === 'carry' && a.destination != null) {
+      movements.push({ start: a.start, duration: a.duration, destination: a.destination, path: a.path });
+    }
+  }
+  movements.sort((a, b) => a.start - b.start);
 
   let pos = { x: entity.initial.x, y: entity.initial.y };
 
-  for (const run of runs) {
-    if (t < run.start) break;
+  for (const mv of movements) {
+    if (t < mv.start) break;
 
-    if (!('x' in run.destination)) continue; // landmark — not implemented
-
-    const dest = run.destination; // { x, y }
-    const end = run.start + run.duration;
+    const end = mv.start + mv.duration;
 
     if (t <= end) {
-      const frac = ease(safeFrac(t - run.start, run.duration));
-      return interpolateAlongPath(pos, dest, run.path, frac);
+      const frac = ease(safeFrac(t - mv.start, mv.duration));
+      return interpolateAlongPath(pos, mv.destination, mv.path, frac);
     }
 
-    // Run complete — the end position of a bezier is still the destination.
-    pos = { x: dest.x, y: dest.y };
+    pos = { x: mv.destination.x, y: mv.destination.y };
   }
 
   return pos;
 }
 
-// ── resolveBallPosition ───────────────────────────────────────────────────────
+// ── resolvePossessionAtT ──────────────────────────────────────────────────────
 
 /**
- * Returns the VISUAL position of the ball at time `t`, including perimeter offset.
+ * Discriminated union describing ball state at time `t`.
  *
- * Ball possession timeline:
- *   - Before the first ball action: ball is on the first actor's perimeter.
- *   - During a Pass: ball in flight from PASSER'S PERIMETER at pass-start →
- *       RECEIVER'S PERIMETER at pass-end. No center-pop at either end.
- *   - After a Pass to an entity: ball BINDS to that receiver — follows their
- *       perimeter until the next ball action.
- *   - During a Carry: ball on the carrier's perimeter (their Run handles movement).
- *   - After a Carry: ball remains on the carrier's perimeter.
+ *   owned    — ball is bound to a player (at rest or moving with them during a carry).
+ *   inFlight — ball is mid-pass (fromPos → toPos with interpolation data).
+ *   loose    — no owner; ball rests at an absolute position.
  *
- * Perimeter offset logic lives here, never in the renderer.
+ * This is the SINGLE authoritative possession resolver. Both resolveBallPosition
+ * and resolveOwnerAtT derive from this; there is no separate implementation.
  */
-export function resolveBallPosition(
-  doc: GafferDocument,
-  t: number,
-): { x: number; y: number } {
+export type PossessionState =
+  | { kind: 'owned'; ownerId: string }
+  | { kind: 'inFlight'; fromPos: { x: number; y: number }; toPos: { x: number; y: number }; progress: number; path: { type: string; cx?: number; cy?: number } }
+  | { kind: 'loose'; pos: { x: number; y: number } };
+
+export function resolvePossessionAtT(doc: GafferDocument, t: number): PossessionState {
   const ballEntity = doc.entities.find((e): e is BallEntity => e.kind === 'ball');
-  const initialPos = ballEntity
-    ? { x: ballEntity.initial.x, y: ballEntity.initial.y }
-    : { x: 400, y: 300 };
+
+  // No ball entity placed yet — return a loose fallback (won't be rendered by editor).
+  if (!ballEntity) {
+    return { kind: 'loose', pos: { x: 400, y: 300 } };
+  }
 
   const ballActions = doc.actions
     .filter((a): a is CarryAction | PassAction => a.kind === 'carry' || a.kind === 'pass')
     .sort((a, b) => a.start - b.start);
 
-  // Seed the initial owner: whoever performs the first ball action implicitly holds
-  // the ball before the sequence begins, so at t=0 the ball is on their perimeter.
-  let currentOwner: string | null =
-    ballActions.length > 0 ? ballActions[0].entityId : null;
-  let lastLoosePos = { ...initialPos };
+  // Seed initial owner: first player whose center contains ball.initial.
+  // The editor snaps ball.initial to the player's center on placement, enabling this check.
+  let currentOwner: string | null = null;
+  for (const e of doc.entities) {
+    if (e.kind !== 'player') continue;
+    const r = e.radius ?? DEFAULT_ENTITY_RADIUS;
+    const dx = e.initial.x - ballEntity.initial.x;
+    const dy = e.initial.y - ballEntity.initial.y;
+    if (dx * dx + dy * dy <= r * r) {
+      currentOwner = e.id;
+      break;
+    }
+  }
+  let lastLoosePos: { x: number; y: number } = { x: ballEntity.initial.x, y: ballEntity.initial.y };
 
   for (const action of ballActions) {
     if (t < action.start) {
-      // Haven't reached this action yet — return ball in its current state.
-      if (currentOwner !== null) {
-        return ballPerimeter(doc, currentOwner, resolvePosition(doc, currentOwner, t));
-      }
-      return lastLoosePos;
+      // Haven't reached this action — return current possession state.
+      if (currentOwner !== null) return { kind: 'owned', ownerId: currentOwner };
+      return { kind: 'loose', pos: lastLoosePos };
     }
 
     const end = action.start + action.duration;
-    const frac = ease(safeFrac(t - action.start, action.duration));
 
     if (action.kind === 'carry') {
-      if (t <= end) {
-        // During carry: ball sits on the carrier's perimeter.
-        // resolvePosition follows their Run (including bezier) automatically.
-        const center = resolvePosition(doc, action.entityId, t);
-        return ballPerimeter(doc, action.entityId, center);
-      }
-      // Carry complete — carrier still owns the ball.
+      // During carry: ball is owned by carrier (movement tracked by resolvePosition).
+      if (t < end) return { kind: 'owned', ownerId: action.entityId };
+      // Carry complete — carrier retains possession.
       currentOwner = action.entityId;
     } else {
-      // pass — use inline `in` narrowing so TypeScript resolves PassTarget members
-      const target = action.target;
-
-      // Pass originates from the PASSER'S PERIMETER at the moment of release.
+      // Pass: ball flies from PASSER'S PERIMETER at release → TARGET'S PERIMETER at arrival.
       const passerCenter = resolvePosition(doc, action.entityId, action.start);
       const fromPos = ballPerimeter(doc, action.entityId, passerCenter);
 
-      // Pass arrives at the RECEIVER'S PERIMETER at the moment of arrival.
-      const toPos =
-        'entityId' in target
-          ? ballPerimeter(doc, target.entityId, resolvePosition(doc, target.entityId, end))
-          : { x: target.x, y: target.y }; // location targets have no perimeter offset
+      let toPos: { x: number; y: number };
+      if ('entityId' in action.target) {
+        const receiverCenter = resolvePosition(doc, action.target.entityId, end);
+        toPos = ballPerimeter(doc, action.target.entityId, receiverCenter);
+      } else {
+        toPos = { x: action.target.x, y: action.target.y };
+      }
 
-      if (t <= end) {
-        // Ball in flight — glides from perimeter to perimeter, no jump at either end.
-        return interpolateAlongPath(fromPos, toPos, action.path, frac);
+      if (t < end) {
+        // Ball in flight — no owner, interpolation data returned.
+        const progress = ease(safeFrac(t - action.start, action.duration));
+        return { kind: 'inFlight', fromPos, toPos, progress, path: action.path };
       }
 
       // Pass complete.
@@ -232,11 +241,44 @@ export function resolveBallPosition(
     }
   }
 
-  // After all ball actions: still on the owner's perimeter, or loose at lastLoosePos.
-  if (currentOwner !== null) {
-    return ballPerimeter(doc, currentOwner, resolvePosition(doc, currentOwner, t));
+  // After all ball actions.
+  if (currentOwner !== null) return { kind: 'owned', ownerId: currentOwner };
+  return { kind: 'loose', pos: lastLoosePos };
+}
+
+// ── resolveBallPosition ───────────────────────────────────────────────────────
+
+/**
+ * Returns the VISUAL position of the ball at time `t`, including perimeter offset.
+ * Derives entirely from resolvePossessionAtT — no separate ownership logic.
+ */
+export function resolveBallPosition(
+  doc: GafferDocument,
+  t: number,
+): { x: number; y: number } {
+  const poss = resolvePossessionAtT(doc, t);
+  switch (poss.kind) {
+    case 'owned':
+      // Ball sits tangent to owner's perimeter; follows their resolvedPosition.
+      return ballPerimeter(doc, poss.ownerId, resolvePosition(doc, poss.ownerId, t));
+    case 'inFlight':
+      // Ball glides perimeter-to-perimeter; no center-pop at either end.
+      return interpolateAlongPath(poss.fromPos, poss.toPos, poss.path, poss.progress);
+    case 'loose':
+      return poss.pos;
   }
-  return lastLoosePos;
+}
+
+// ── resolveOwnerAtT ───────────────────────────────────────────────────────────
+
+/**
+ * Returns the entity id of the ball owner at time `t`, or null (inFlight / loose / no ball).
+ * Derives from resolvePossessionAtT — guaranteed to agree with resolveBallPosition.
+ */
+export function resolveOwnerAtT(doc: GafferDocument, t: number): string | null {
+  if (!doc.entities.some(e => e.kind === 'ball')) return null;
+  const poss = resolvePossessionAtT(doc, t);
+  return poss.kind === 'owned' ? poss.ownerId : null;
 }
 
 // ── resolveBoardState ─────────────────────────────────────────────────────────

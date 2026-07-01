@@ -116,6 +116,8 @@ export interface RunAction extends ActionBase {
 export interface CarryAction extends ActionBase {
   kind: 'carry';
   path: Path;
+  /** Carry endpoint. When present, resolvePosition moves the carrier here (no concurrent Run needed). */
+  destination?: { x: number; y: number };
 }
 
 export type MarkOffset = 'goal-side-tight' | 'zonal' | { dx: number; dy: number };
