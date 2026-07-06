@@ -161,6 +161,8 @@ export interface EditorStore {
   selectAction: (id: string | null) => void;
   /** Set the bezier curve for an action by specifying an apex point (or null to straighten). */
   setActionCurve: (actionId: string, apexX: number | null, apexY: number | null) => void;
+  /** Replace the current document entirely (e.g. loading from persistence). Resets all transient state. */
+  loadDocument: (doc: GafferDocument) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set) => ({
@@ -380,6 +382,19 @@ export const useEditorStore = create<EditorStore>((set) => ({
     }),
 
   selectAction: (id) => set({ selectedActionId: id }),
+
+  loadDocument: (doc) =>
+    set({
+      document: doc,
+      tool: 'select',
+      selectedEntityId: null,
+      pendingSourceId: null,
+      undoHistory: [],
+      canUndo: false,
+      selectedActionId: null,
+      lastCreatedActionId: null,
+      lastCreatedUndoDepth: 0,
+    }),
 
   setActionCurve: (actionId, apexX, apexY) =>
     set((state) => {

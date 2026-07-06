@@ -21,9 +21,14 @@ import {
   ChevronLeft,
   ChevronRight,
   Undo2,
+  Save,
+  FolderOpen,
+  Pencil,
 } from 'lucide-react';
 import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
+import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions/documents';
+import type { DocSummary } from '@/app/actions/documents';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
 import type { EntitySnapshot } from '@/lib/engine/resolve';
 import type { GafferDocument, Action } from '@/lib/engine/types';
@@ -209,6 +214,7 @@ export default function EditorPage() {
     updateAction,
     deleteAction,
     deleteEntity,
+    loadDocument,
     undo,
     canUndo,
   } = useEditorStore();
@@ -219,6 +225,14 @@ export default function EditorPage() {
   const [playing, setPlaying] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
   const [draggingApex, setDraggingApex] = useState<{ x: number; y: number } | null>(null);
+
+  // ── Persistence state ──────────────────────────────────────────────────────
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [docsOpen, setDocsOpen] = useState(false);
+  const [docsList, setDocsList] = useState<DocSummary[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameStr, setRenameStr] = useState('');
 
   const playingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
@@ -627,6 +641,47 @@ export default function EditorPage() {
           : 'drag ball/owner → pass or carry  |  drag player → run  (place ball first for ball actions)')
     : '';
 
+  // ── Persistence handlers ───────────────────────────────────────────────────
+
+  async function handleSave() {
+    setSaveStatus('saving');
+    const result = await saveDoc(doc);
+    setSaveStatus(result.error ? 'error' : 'saved');
+    setTimeout(() => setSaveStatus('idle'), 2000);
+    if (docsOpen) refreshDocs();
+  }
+
+  async function refreshDocs() {
+    setDocsLoading(true);
+    const list = await listDocs();
+    setDocsList(list);
+    setDocsLoading(false);
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (docsOpen) refreshDocs(); }, [docsOpen]);
+
+  async function handleLoadDoc(id: string) {
+    const loaded = await fetchDoc(id);
+    if (loaded) {
+      loadDocument(loaded);
+      tRef.current = 0;
+      setT(0);
+    }
+  }
+
+  async function handleDeleteDoc(id: string) {
+    await deleteDoc(id);
+    refreshDocs();
+  }
+
+  async function commitRename() {
+    if (!renamingId || !renameStr.trim()) { setRenamingId(null); return; }
+    await renameDoc(renamingId, renameStr.trim());
+    setRenamingId(null);
+    refreshDocs();
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -801,15 +856,34 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* ── Right: action list ─────────────────────────────────────────────── */}
+      {/* ── Right: action list + documents ────────────────────────────────── */}
       <div className="flex-shrink-0 w-64 border-l border-[#1e3a20] bg-[#0b1a0d] flex flex-col overflow-hidden">
+        {/* Header */}
         <div
           className="px-3 border-b border-[#1e3a20] flex items-center justify-between"
           style={{ paddingTop: 10, paddingBottom: 10, fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: '#4a7a4e' }}
         >
           <span>ACTIONS</span>
-          <span style={{ fontWeight: 400, color: '#2d5a30', letterSpacing: 0 }}>start · dur</span>
+          <div className="flex items-center gap-2">
+            <button
+              title={saveStatus === 'saving' ? 'Saving…' : 'Save document (Ctrl+S)'}
+              onClick={handleSave}
+              disabled={saveStatus === 'saving'}
+              className={[
+                'flex items-center gap-1 text-[10px] cursor-pointer transition-colors',
+                saveStatus === 'saved' ? 'text-[#22c55e]'
+                  : saveStatus === 'error' ? 'text-red-400'
+                  : 'text-[#2d5a30] hover:text-[#86efac]',
+              ].join(' ')}
+            >
+              <Save size={11} />
+              {saveStatus === 'saving' ? 'saving…' : saveStatus === 'saved' ? 'saved' : saveStatus === 'error' ? 'error' : 'save'}
+            </button>
+            <span style={{ fontWeight: 400, color: '#2d5a30', letterSpacing: 0 }}>start · dur</span>
+          </div>
         </div>
+
+        {/* Action rows */}
         <div className="flex-1 overflow-y-auto">
           {sortedActions.length === 0 ? (
             <p style={{ padding: '16px 12px', fontSize: 11, color: '#2d5a30', lineHeight: 1.6 }}>
@@ -829,6 +903,81 @@ export default function EditorPage() {
                 onSelect={(id) => { setSelected(null); selectAction(id); }}
               />
             ))
+          )}
+        </div>
+
+        {/* Documents section */}
+        <div className="border-t border-[#1e3a20] flex-shrink-0">
+          <button
+            onClick={() => setDocsOpen((v) => !v)}
+            className="w-full px-3 py-2 flex items-center gap-1.5 cursor-pointer hover:bg-[#0d1a0e]"
+            style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: '#4a7a4e' }}
+          >
+            {docsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            <FolderOpen size={11} />
+            DOCUMENTS
+          </button>
+
+          {docsOpen && (
+            <div className="overflow-y-auto max-h-52 border-t border-[#1a2e1c]">
+              {docsLoading ? (
+                <p className="px-3 py-2 text-[11px]" style={{ color: '#2d5a30' }}>Loading…</p>
+              ) : docsList.length === 0 ? (
+                <p className="px-3 py-2 text-[11px]" style={{ color: '#2d5a30' }}>No saved documents.</p>
+              ) : (
+                docsList.map((d) => (
+                  <div
+                    key={d.id}
+                    className="px-3 py-1.5 border-b border-[#1a2e1c] flex items-center gap-1 hover:bg-[#0d1a0e]"
+                    style={{ fontSize: 11 }}
+                  >
+                    {renamingId === d.id ? (
+                      <input
+                        autoFocus
+                        className="flex-1 min-w-0 rounded px-1 py-0.5 text-[11px] focus:outline-none"
+                        style={{ background: '#0f1f10', border: '1px solid #22c55e', color: '#86efac' }}
+                        value={renameStr}
+                        onChange={(e) => setRenameStr(e.target.value)}
+                        onBlur={commitRename}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitRename();
+                          if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                      />
+                    ) : (
+                      <span
+                        className="flex-1 min-w-0 truncate cursor-pointer"
+                        style={{ color: '#86efac' }}
+                        title={`Load: ${d.name}`}
+                        onClick={() => handleLoadDoc(d.id)}
+                      >
+                        {d.name}
+                      </span>
+                    )}
+                    <button
+                      title="Rename"
+                      onClick={() => { setRenamingId(d.id); setRenameStr(d.name); }}
+                      className="flex-shrink-0"
+                      style={{ color: '#2d5a30' }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#86efac'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#2d5a30'; }}
+                    >
+                      <Pencil size={11} />
+                    </button>
+                    <button
+                      title="Delete"
+                      onClick={() => handleDeleteDoc(d.id)}
+                      className="flex-shrink-0"
+                      style={{ color: '#2d5a30' }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#f87171'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#2d5a30'; }}
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           )}
         </div>
       </div>
