@@ -1,7 +1,7 @@
 'use client';
 
-// Authoring surface — place entities, draw actions by gesture, play through the engine.
-// Canvas always renders at the current playhead time t; authoring anchors new actions at t.
+// Authoring surface — place entities, author actions by gesture, play through the engine.
+// Author mode: drag ball/owner → infer pass or carry; drag player → run.
 
 import dynamic from 'next/dynamic';
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
@@ -9,6 +9,7 @@ import {
   MousePointer2,
   UserPlus,
   Circle,
+  Hand,
   ArrowRight,
   Footprints,
   Move,
@@ -19,6 +20,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Undo2,
 } from 'lucide-react';
 import { useEditorStore, maxActionEnd } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
@@ -55,7 +57,7 @@ const HIT_RADIUS = 22;
 const DEFAULT_ENTITY_RADIUS = 22;
 const BALL_RADIUS = 9;
 
-/** Find entity id at (x,y) using resolved positions from boardState. */
+/** Find entity id at (x,y) using resolved positions from boardState (players/cones/etc., not ball). */
 function findEntityAtPoint(entities: EntitySnapshot[], x: number, y: number): string | null {
   for (const e of entities) {
     const r = e.radius ?? HIT_RADIUS;
@@ -81,9 +83,7 @@ const TOOL_DEFS: { id: Tool; icon: React.ReactNode; title: string }[] = [
   { id: 'select', icon: <MousePointer2 size={16} />, title: 'Select / Move — drag to reposition; Del to delete' },
   { id: 'player', icon: <UserPlus size={16} />, title: 'Place Player — click empty pitch' },
   { id: 'ball', icon: <Circle size={16} />, title: 'Place Ball — click a player to give them possession' },
-  { id: 'pass', icon: <ArrowRight size={16} />, title: 'Pass — drag ball or click target player (passer = owner at t)' },
-  { id: 'run', icon: <Footprints size={16} />, title: 'Run — drag player to destination' },
-  { id: 'carry', icon: <Move size={16} />, title: 'Carry — drag ball to destination (carrier = owner at t)' },
+  { id: 'author', icon: <Hand size={16} />, title: 'Author — drag ball/owner → pass or carry; drag other player → run' },
 ];
 
 // ── Action list row ───────────────────────────────────────────────────────────
@@ -190,10 +190,8 @@ export default function EditorPage() {
     document: doc,
     tool,
     selectedEntityId,
-    pendingSourceId,
     setTool,
     setSelected,
-    setPendingSource,
     addPlayer,
     addBall,
     moveEntity,
@@ -203,6 +201,8 @@ export default function EditorPage() {
     updateAction,
     deleteAction,
     deleteEntity,
+    undo,
+    canUndo,
   } = useEditorStore();
 
   // ── Playhead ────────────────────────────────────────────────────────────────
@@ -234,6 +234,16 @@ export default function EditorPage() {
     }
     prevActionsLenRef.current = doc.actions.length;
   }, [doc.actions, totalDuration]);
+
+  // After undo (or action deletion), clamp playhead to new total duration.
+  const prevTotalDurationRef = useRef(totalDuration);
+  useEffect(() => {
+    if (totalDuration < prevTotalDurationRef.current && tRef.current > totalDuration) {
+      tRef.current = totalDuration;
+      setT(totalDuration);
+    }
+    prevTotalDurationRef.current = totalDuration;
+  }, [totalDuration]);
 
   const tick = useCallback((now: number) => {
     if (!playingRef.current) return;
@@ -325,7 +335,6 @@ export default function EditorPage() {
   const actionOverlays = useMemo((): ActionOverlay[] => {
     const dir = doc.stage.direction;
 
-    // Mirror of resolve.ts ballPerimeter: places ball tangent to player perimeter.
     function perim(cx: number, cy: number, r: number) {
       const dist = r + BALL_RADIUS + 1;
       return { x: cx, y: cy + (dir === 'up' ? -dist : dist) };
@@ -365,8 +374,6 @@ export default function EditorPage() {
   }, [doc, t]);
 
   // ── DIAGNOSTIC: ball-hidden-under-marker assertion ─────────────────────────
-  // If the ball's visual position is inside its owner's marker radius, the tangent
-  // offset is broken. This should never be true in correct operation.
   const ballHidden = useMemo(() => {
     if (!ownerAtT) return false;
     const owner = boardState.entities.find((e) => e.id === ownerAtT);
@@ -379,7 +386,6 @@ export default function EditorPage() {
 
   const hiddenWarnRef = useRef<string | null>(null);
   useEffect(() => {
-    // DIAGNOSTIC: warn once per (t, owner) pair when ball is inside the owner's marker
     if (ballHidden && ownerAtT) {
       const key = `${t.toFixed(2)}|${ownerAtT}`;
       if (hiddenWarnRef.current !== key) {
@@ -389,51 +395,86 @@ export default function EditorPage() {
     }
   }, [ballHidden, ownerAtT, t]);
 
-  // ── Ghost drag line ────────────────────────────────────────────────────────
+  // ── Ghost drag line + gesture hint ────────────────────────────────────────
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
 
-  const ghostLine = useMemo(() => {
-    if (!draggingId || !cursorPos) return null;
-
-    if (tool === 'run') {
-      const entity = boardState.entities.find((e) => e.id === draggingId);
-      if (!entity || entity.kind !== 'player') return null;
-      return { x1: entity.x, y1: entity.y, x2: cursorPos.x, y2: cursorPos.y };
+  // Live hint text during an Author-mode drag: updated as cursor moves.
+  const gestureHint = useMemo((): string | null => {
+    if (tool !== 'author' || !draggingId || !cursorPos) return null;
+    const isBallSource = draggingId === ballEntityId || draggingId === endOwner;
+    if (isBallSource) {
+      const targetId = findEntityAtPoint(boardState.entities, cursorPos.x, cursorPos.y);
+      if (targetId && targetId !== endOwner) {
+        const target = doc.entities.find((e) => e.id === targetId);
+        if (target?.kind === 'player') return `pass → ${entityLabel(doc, targetId)}`;
+      }
+      return 'carry';
     }
+    const entity = doc.entities.find((e) => e.id === draggingId);
+    if (entity?.kind === 'player') return 'run';
+    return null;
+  }, [tool, draggingId, cursorPos, ballEntityId, endOwner, boardState.entities, doc]);
 
-    if ((tool === 'pass' || tool === 'carry') && (draggingId === ballEntityId || draggingId === endOwner)) {
-      // Ghost line starts from the ball's current visual position (already has perimeter offset)
+  const ghostLine = useMemo(() => {
+    if (!draggingId || !cursorPos || tool !== 'author') return null;
+    const isBallSource = draggingId === ballEntityId || draggingId === endOwner;
+    if (isBallSource && ballEntityId) {
       return { x1: boardState.ball.x, y1: boardState.ball.y, x2: cursorPos.x, y2: cursorPos.y };
     }
-
+    const entity = boardState.entities.find((e) => e.id === draggingId);
+    if (entity?.kind === 'player') {
+      return { x1: entity.x, y1: entity.y, x2: cursorPos.x, y2: cursorPos.y };
+    }
     return null;
   }, [draggingId, cursorPos, tool, boardState, ballEntityId, endOwner]);
 
-  // ── Delete key handler ────────────────────────────────────────────────────
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (tool === 'select' && selectedEntityId && !playing) {
-        deleteEntity(selectedEntityId);
+
+      // Delete / Backspace — remove selected entity in select mode
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (tool === 'select' && selectedEntityId && !playing) {
+          deleteEntity(selectedEntityId);
+        }
+        return;
+      }
+
+      // Cmd/Ctrl+Z — undo
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        if (canUndo) undo();
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [tool, selectedEntityId, playing, deleteEntity]);
+  }, [tool, selectedEntityId, playing, deleteEntity, canUndo, undo]);
 
   // ── Board interaction ──────────────────────────────────────────────────────
 
   function handleBoardClick(x: number, y: number) {
     if (playing) return;
-    const hitId = findEntityAtPoint(boardState.entities, x, y);
+
+    // Hit-test entities (players/cones/etc. at resolved positions)
+    let hitId = findEntityAtPoint(boardState.entities, x, y);
+
+    // Also check ball — not in boardState.entities, rendered separately
+    if (!hitId && ballEntityId) {
+      const dx = boardState.ball.x - x;
+      const dy = boardState.ball.y - y;
+      if (dx * dx + dy * dy <= (BALL_RADIUS + 4) * (BALL_RADIUS + 4)) {
+        hitId = ballEntityId;
+      }
+    }
 
     switch (tool) {
       case 'select':
+      case 'author':
         setSelected(hitId);
         break;
 
@@ -446,31 +487,10 @@ export default function EditorPage() {
           addBall(x, y);
         }
         break;
-
-      case 'pass':
-        if (hitId && hitId !== endOwner) {
-          const target = doc.entities.find((e) => e.id === hitId);
-          if (target?.kind === 'player') addPass(hitId);
-        }
-        break;
-
-      case 'run':
-        if (!pendingSourceId) {
-          if (hitId && doc.entities.find((e) => e.id === hitId)?.kind === 'player') {
-            setPendingSource(hitId);
-          }
-        } else {
-          addRun(pendingSourceId, x, y, tRef.current);
-        }
-        break;
-
-      case 'carry':
-        if (!hitId) addCarry(x, y);
-        break;
     }
   }
 
-  // ── Drag-to-author ────────────────────────────────────────────────────────
+  // ── Drag handlers ─────────────────────────────────────────────────────────
 
   function handleEntityDragStart(id: string) {
     setDraggingId(id);
@@ -480,33 +500,31 @@ export default function EditorPage() {
     setDraggingId(null);
     setCursorPos(null);
     if (playing) return;
-    const isBallOrOwner = id === ballEntityId || id === endOwner;
 
     switch (tool) {
       case 'select':
         moveEntity(id, x, y);
         break;
 
-      case 'run': {
-        const entity = doc.entities.find((e) => e.id === id);
-        if (entity?.kind === 'player') addRun(id, x, y, tRef.current);
-        break;
-      }
-
-      case 'pass': {
-        if (!isBallOrOwner) break;
-        const targetId = findEntityAtPoint(boardState.entities, x, y);
-        const target = targetId ? doc.entities.find((e) => e.id === targetId) : null;
-        if (targetId && target?.kind === 'player' && targetId !== endOwner) {
-          addPass(targetId);
+      case 'author': {
+        // inferGesture: ball/owner source → pass (onto player) or carry (into space)
+        //               non-owner player → run
+        const isBallSource = id === ballEntityId || id === endOwner;
+        if (isBallSource) {
+          const targetId = findEntityAtPoint(boardState.entities, x, y);
+          const target = targetId ? doc.entities.find((e) => e.id === targetId) : null;
+          if (targetId && target?.kind === 'player' && targetId !== endOwner) {
+            addPass(targetId);
+          } else if (!targetId) {
+            addCarry(x, y);
+          }
+          // drop on endOwner itself or non-player → no-op
+        } else {
+          const entity = doc.entities.find((e) => e.id === id);
+          if (entity?.kind === 'player') {
+            addRun(id, x, y, tRef.current);
+          }
         }
-        break;
-      }
-
-      case 'carry': {
-        if (!isBallOrOwner) break;
-        const hitId = findEntityAtPoint(boardState.entities, x, y);
-        if (!hitId) addCarry(x, y);
         break;
       }
     }
@@ -521,10 +539,6 @@ export default function EditorPage() {
         .sort((a, b) => a.start - b.start),
     [doc.actions],
   );
-
-  // Selection/pending display
-  const selId = pendingSourceId ? null : selectedEntityId;
-  const pendId = pendingSourceId;
 
   // ── Live state readout ────────────────────────────────────────────────────
 
@@ -541,13 +555,11 @@ export default function EditorPage() {
   const toolPhrase =
     tool === 'select' ? 'drag to reposition, Del to delete'
     : tool === 'player' ? 'click pitch to place'
-    : tool === 'ball' ? 'click to place ball'
-    : tool === 'pass'
-      ? (endOwner ? `drag ball → player  (from: ${endOwnerLabel})` : 'no owner — place ball first')
-    : tool === 'run'
-      ? (pendingSourceId ? 'click destination' : 'drag player → destination')
-    : tool === 'carry'
-      ? (endOwner ? `drag ball → space  (from: ${endOwnerLabel})` : 'no owner — place ball first')
+    : tool === 'ball' ? 'click a player to place ball'
+    : tool === 'author'
+      ? (endOwner
+          ? `drag ball/owner → pass or carry  |  drag player → run  (next from: ${endOwnerLabel})`
+          : 'drag ball/owner → pass or carry  |  drag player → run  (place ball first for ball actions)')
     : '';
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -573,12 +585,30 @@ export default function EditorPage() {
           </button>
         ))}
 
-        {/* Delete button — only visible in Select mode with something selected */}
+        {/* Separator */}
+        <div className="w-6 border-t border-[#1e3a20] mt-1" />
+
+        {/* Undo */}
+        <button
+          title="Undo (Cmd+Z)"
+          onClick={() => undo()}
+          disabled={!canUndo}
+          className={[
+            'w-9 h-9 rounded-lg flex items-center justify-center transition-colors',
+            canUndo
+              ? 'text-[#4a7a4e] hover:bg-[#1a3320] hover:text-[#86efac] cursor-pointer'
+              : 'text-[#1e3a20] cursor-not-allowed',
+          ].join(' ')}
+        >
+          <Undo2 size={16} />
+        </button>
+
+        {/* Delete — only visible in Select mode with something selected */}
         {tool === 'select' && selectedEntityId && (
           <button
             title="Delete selected entity (Del)"
             onClick={() => deleteEntity(selectedEntityId)}
-            className="w-9 h-9 rounded-lg flex items-center justify-center text-[#4a7a4e] hover:bg-[#2d0a0a] hover:text-red-400 cursor-pointer mt-1"
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-[#4a7a4e] hover:bg-[#2d0a0a] hover:text-red-400 cursor-pointer"
           >
             <Trash2 size={16} />
           </button>
@@ -592,8 +622,7 @@ export default function EditorPage() {
           boardState={boardState}
           stage={doc.stage}
           onBoardPointerDown={handleBoardClick}
-          selectedEntityId={selId}
-          pendingEntityId={pendId}
+          selectedEntityId={selectedEntityId}
           ballOwnerEntityId={ownerAtT}
           onEntityDragEnd={playing ? undefined : handleEntityDragEnd}
           onEntityDragStart={playing ? undefined : handleEntityDragStart}
@@ -623,8 +652,10 @@ export default function EditorPage() {
             next from: <span style={{ color: endOwner ? '#fbbf24' : '#6b7280' }}>{endOwnerLabel ?? 'nobody'}</span>
           </span>
           <span style={{ color: '#1e3a20' }}>|</span>
-          <span style={{ color: '#f59e0b' }}>{tool}: </span>
-          <span style={{ color: '#6b7280' }}>{toolPhrase}</span>
+          <span style={{ color: gestureHint ? '#22c55e' : '#f59e0b' }}>
+            {gestureHint ?? `${tool}: `}
+          </span>
+          {!gestureHint && <span style={{ color: '#6b7280' }}>{toolPhrase}</span>}
         </div>
 
         {/* Scrubber */}
@@ -701,7 +732,7 @@ export default function EditorPage() {
         <div className="flex-1 overflow-y-auto">
           {sortedActions.length === 0 ? (
             <p style={{ padding: '16px 12px', fontSize: 11, color: '#2d5a30', lineHeight: 1.6 }}>
-              No actions yet. Use pass, run, or carry tools.
+              No actions yet. In Author mode, drag ball or players to create actions.
             </p>
           ) : (
             sortedActions.map((a) => (

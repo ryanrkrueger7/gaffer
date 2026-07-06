@@ -14,9 +14,10 @@ import {
 import { resolveOwnerAtT } from './resolve';
 import type { GafferDocument } from './types';
 
-export type Tool = 'select' | 'player' | 'ball' | 'pass' | 'run' | 'carry';
+export type Tool = 'select' | 'player' | 'ball' | 'author';
 
 const DEFAULT_ENTITY_RADIUS = 22;
+const UNDO_LIMIT = 30;
 
 // Single shared beat — every editor-created action references this beat id.
 const _defaultBeat = makeBeat({ order: 0 });
@@ -28,16 +29,6 @@ function makeInitialDoc(): GafferDocument {
   return doc;
 }
 
-/**
- * Returns the entity id of whoever currently holds the ball at the END of the
- * authored sequence — i.e., "who has the ball next?". This drives pass/carry
- * authoring: the passer/carrier is always the current owner, never chosen manually.
- *
- * Derivation order:
- *  1. Walk all carry/pass actions in start order; last one wins.
- *  2. If no ball actions exist, fall back to whichever player's initial position
- *     coincides with ball.initial (the snap-to-player placement rule).
- */
 /** Returns the time at which the last authored action ends, or 0 if none. */
 export function maxActionEnd(doc: GafferDocument): number {
   if (doc.actions.length === 0) return 0;
@@ -55,18 +46,16 @@ export function computeCurrentOwner(doc: GafferDocument): string | null {
       if (action.kind === 'carry') {
         owner = action.entityId;
       } else {
-        // pass
         if ('entityId' in action.target) {
           owner = action.target.entityId;
         } else {
-          owner = null; // location pass → loose
+          owner = null;
         }
       }
     }
     return owner;
   }
 
-  // No ball actions: detect initial owner by ball placement proximity.
   const ball = doc.entities.find((e) => e.kind === 'ball');
   if (!ball || !('initial' in ball)) return null;
   const bx = (ball as { initial: { x: number; y: number } }).initial.x;
@@ -82,12 +71,19 @@ export function computeCurrentOwner(doc: GafferDocument): string | null {
   return null;
 }
 
+/** Push doc onto history, capped at UNDO_LIMIT entries. */
+function pushHistory(history: GafferDocument[], doc: GafferDocument): GafferDocument[] {
+  const next = [...history, doc];
+  return next.length > UNDO_LIMIT ? next.slice(next.length - UNDO_LIMIT) : next;
+}
+
 export interface EditorStore {
   document: GafferDocument;
   tool: Tool;
   selectedEntityId: string | null;
-  /** Used only by the Run tool (two-click fallback: first click = source player). */
   pendingSourceId: string | null;
+  undoHistory: GafferDocument[];
+  canUndo: boolean;
 
   setTool: (tool: Tool) => void;
   setSelected: (id: string | null) => void;
@@ -107,8 +103,9 @@ export interface EditorStore {
   addCarry: (x: number, y: number) => void;
   updateAction: (id: string, patch: { start?: number; duration?: number }) => void;
   deleteAction: (id: string) => void;
-  /** Remove entity + any actions that reference it (as actor or pass target). */
+  /** Remove entity + any actions that reference it. Deleting the ball also removes all carry/pass actions. */
   deleteEntity: (id: string) => void;
+  undo: () => void;
 }
 
 export const useEditorStore = create<EditorStore>((set) => ({
@@ -116,6 +113,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
   tool: 'select',
   selectedEntityId: null,
   pendingSourceId: null,
+  undoHistory: [],
+  canUndo: false,
 
   setTool: (tool) => set({ tool, pendingSourceId: null }),
   setSelected: (id) => set({ selectedEntityId: id }),
@@ -134,14 +133,14 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.document,
           entities: [...state.document.entities, player],
         },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
       };
     }),
 
   addBall: (x, y) =>
     set((state) => {
       if (state.document.entities.some((e) => e.kind === 'ball')) return state;
-      // Snap ball.initial onto the nearest player within radius so the engine
-      // can detect implicit ownership at t=0 via position coincidence.
       let snapX = x;
       let snapY = y;
       for (const e of state.document.entities) {
@@ -161,6 +160,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.document,
           entities: [...state.document.entities, ball],
         },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
       };
     }),
 
@@ -172,6 +173,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
           e.id === id && 'initial' in e ? { ...e, initial: { x, y } } : e,
         ),
       },
+      undoHistory: pushHistory(state.undoHistory, state.document),
+      canUndo: true,
     })),
 
   addPass: (targetId) =>
@@ -185,7 +188,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       const duration = targetRun ? targetRun.duration : 0.8;
 
       const ownerId = resolveOwnerAtT(state.document, startT);
-      if (!ownerId) return state; // no ball owner at sequence end — no-op
+      if (!ownerId) return state;
       const pass = makePass({
         entityId: ownerId,
         beatId: DEFAULT_BEAT_ID,
@@ -198,6 +201,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.document,
           actions: [...state.document.actions, pass],
         },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
         pendingSourceId: null,
       };
     }),
@@ -216,6 +221,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.document,
           actions: [...state.document.actions, run],
         },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
         pendingSourceId: null,
       };
     }),
@@ -224,7 +231,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
     set((state) => {
       const startT = maxActionEnd(state.document);
       const ownerId = resolveOwnerAtT(state.document, startT);
-      if (!ownerId) return state; // no ball owner at sequence end — no-op
+      if (!ownerId) return state;
       const carry = makeCarry({
         entityId: ownerId,
         beatId: DEFAULT_BEAT_ID,
@@ -237,6 +244,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.document,
           actions: [...state.document.actions, carry],
         },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
         pendingSourceId: null,
       };
     }),
@@ -249,6 +258,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
           a.id === id ? { ...a, ...patch } : a,
         ),
       },
+      undoHistory: pushHistory(state.undoHistory, state.document),
+      canUndo: true,
     })),
 
   deleteAction: (id) =>
@@ -257,19 +268,44 @@ export const useEditorStore = create<EditorStore>((set) => ({
         ...state.document,
         actions: state.document.actions.filter((a) => a.id !== id),
       },
+      undoHistory: pushHistory(state.undoHistory, state.document),
+      canUndo: true,
     })),
 
   deleteEntity: (id) =>
-    set((state) => ({
-      document: {
-        ...state.document,
-        entities: state.document.entities.filter((e) => e.id !== id),
-        actions: state.document.actions.filter((a) => {
-          if (a.entityId === id) return false;
-          if (a.kind === 'pass' && 'entityId' in a.target && a.target.entityId === id) return false;
-          return true;
-        }),
-      },
-      selectedEntityId: state.selectedEntityId === id ? null : state.selectedEntityId,
-    })),
+    set((state) => {
+      const isBall = state.document.entities.find((e) => e.id === id)?.kind === 'ball';
+      return {
+        document: {
+          ...state.document,
+          entities: state.document.entities.filter((e) => e.id !== id),
+          actions: state.document.actions.filter((a) => {
+            if (isBall) {
+              // Ball deleted — remove all possession-dependent actions
+              return a.kind !== 'pass' && a.kind !== 'carry';
+            }
+            if (a.entityId === id) return false;
+            if (a.kind === 'pass' && 'entityId' in a.target && a.target.entityId === id) return false;
+            return true;
+          }),
+        },
+        selectedEntityId: state.selectedEntityId === id ? null : state.selectedEntityId,
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
+      };
+    }),
+
+  undo: () =>
+    set((state) => {
+      if (state.undoHistory.length === 0) return {};
+      const history = [...state.undoHistory];
+      const prev = history.pop()!;
+      return {
+        document: prev,
+        undoHistory: history,
+        canUndo: history.length > 0,
+        selectedEntityId: null,
+        pendingSourceId: null,
+      };
+    }),
 }));
