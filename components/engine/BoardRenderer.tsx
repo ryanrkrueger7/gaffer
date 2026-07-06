@@ -118,6 +118,25 @@ function contrastText(hex: string): string {
   return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? '#000000' : '#ffffff';
 }
 
+// ── Bezier sampling helper ─────────────────────────────────────────────────────
+
+function sampleQuadBezier(
+  x1: number, y1: number,
+  cx: number, cy: number,
+  x2: number, y2: number,
+  n = 20,
+): number[] {
+  const pts: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, mt = 1 - t;
+    pts.push(
+      mt * mt * x1 + 2 * mt * t * cx + t * t * x2,
+      mt * mt * y1 + 2 * mt * t * cy + t * t * y2,
+    );
+  }
+  return pts;
+}
+
 // ── Diagnostic action path overlay ────────────────────────────────────────────
 
 /** One overlay line per authored action — computed at t by the page, rendered here. */
@@ -128,6 +147,11 @@ export interface ActionOverlay {
   x2: number; y2: number;
   /** True when the playhead t is within [action.start, action.start + action.duration]. */
   active: boolean;
+  /** True when this action is the currently selected one. */
+  selected?: boolean;
+  /** Bezier control point (absolute canvas coords) — present when path.type === 'bezier'. */
+  cx?: number;
+  cy?: number;
 }
 
 // Color palette for overlays — reuses existing dark-theme accents.
@@ -265,6 +289,10 @@ export interface BoardRendererProps {
   onEntityDragStart?: (id: string) => void;
   /** When false, the ball is not rendered (no ball entity placed yet). Defaults to true. */
   showBall?: boolean;
+  /** Called when an action overlay line is clicked. */
+  onOverlayClick?: (actionId: string) => void;
+  /** Draggable apex dot for the currently selected action's bezier curve. */
+  apexDot?: { x: number; y: number; onDragMove: (x: number, y: number) => void; onDragEnd: (x: number, y: number) => void } | null;
 }
 
 export default function BoardRenderer({
@@ -282,6 +310,8 @@ export default function BoardRenderer({
   onBoardPointerMove,
   onEntityDragStart,
   showBall = true,
+  onOverlayClick,
+  apexDot,
 }: BoardRendererProps) {
   const { entities, ball, activeAnnotations } = boardState;
   const isDraggable = !!onEntityDragEnd;
@@ -312,18 +342,23 @@ export default function BoardRenderer({
           {/* ── Diagnostic: authored action path overlays (behind entities) ── */}
           {actionOverlays?.map(ov => {
             const color = OVERLAY_COLOR[ov.kind];
-            const opacity = ov.active ? 0.85 : 0.22;
-            const sw = ov.active ? 2 : 1;
+            const opacity = ov.selected ? 1 : (ov.active ? 0.85 : 0.22);
+            const sw = ov.selected ? 2.5 : (ov.active ? 2 : 1);
+            const pts = ov.cx != null && ov.cy != null
+              ? sampleQuadBezier(ov.x1, ov.y1, ov.cx, ov.cy, ov.x2, ov.y2)
+              : [ov.x1, ov.y1, ov.x2, ov.y2];
             if (ov.kind === 'run') {
               // Arrow for runs — directional indicator
               return (
                 <Arrow
                   key={ov.id}
-                  points={[ov.x1, ov.y1, ov.x2, ov.y2]}
+                  points={pts}
                   stroke={color} fill={color}
                   strokeWidth={sw} opacity={opacity}
                   pointerLength={8} pointerWidth={6}
-                  listening={false}
+                  listening={!!onOverlayClick}
+                  hitStrokeWidth={12}
+                  onClick={onOverlayClick ? (e) => { e.cancelBubble = true; onOverlayClick(ov.id); } : undefined}
                 />
               );
             }
@@ -331,10 +366,12 @@ export default function BoardRenderer({
             return (
               <Line
                 key={ov.id}
-                points={[ov.x1, ov.y1, ov.x2, ov.y2]}
+                points={pts}
                 stroke={color} strokeWidth={sw} opacity={opacity}
                 dash={ov.kind === 'carry' ? [7, 4] : undefined}
-                listening={false}
+                listening={!!onOverlayClick}
+                hitStrokeWidth={12}
+                onClick={onOverlayClick ? (e) => { e.cancelBubble = true; onOverlayClick(ov.id); } : undefined}
               />
             );
           })}
@@ -346,6 +383,20 @@ export default function BoardRenderer({
               stroke="white" strokeWidth={1.5} opacity={0.45}
               dash={[5, 5]}
               listening={false}
+            />
+          )}
+
+          {/* ── Apex dot — draggable handle for bezier curve authoring ── */}
+          {apexDot && (
+            <Circle
+              x={apexDot.x} y={apexDot.y}
+              radius={7}
+              fill="white"
+              stroke="#22c55e"
+              strokeWidth={2}
+              draggable
+              onDragMove={(e) => apexDot.onDragMove(e.target.x(), e.target.y())}
+              onDragEnd={(e) => apexDot.onDragEnd(e.target.x(), e.target.y())}
             />
           )}
 

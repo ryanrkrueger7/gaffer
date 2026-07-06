@@ -22,7 +22,7 @@ import {
   ChevronRight,
   Undo2,
 } from 'lucide-react';
-import { useEditorStore, maxActionEnd } from '@/lib/engine/store';
+import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
 import type { EntitySnapshot } from '@/lib/engine/resolve';
@@ -92,16 +92,20 @@ function ActionRow({
   action,
   doc,
   isAtT,
+  isSelected,
   onUpdate,
   onDelete,
   onSeek,
+  onSelect,
 }: {
   action: Action;
   doc: GafferDocument;
   isAtT: boolean;
+  isSelected?: boolean;
   onUpdate: (id: string, patch: { start?: number; duration?: number }) => void;
   onDelete: (id: string) => void;
   onSeek: (t: number) => void;
+  onSelect?: (id: string) => void;
 }) {
   const [startStr, setStartStr] = useState(action.start.toFixed(2));
   const [durStr, setDurStr] = useState(action.duration.toFixed(2));
@@ -147,9 +151,9 @@ function ActionRow({
     <div
       className={[
         'flex items-center gap-1.5 px-3 py-2 border-b border-[#1a2e1c] text-[11px] cursor-pointer',
-        isAtT ? 'bg-[#0f2010]' : 'hover:bg-[#0d1a0e]',
+        isAtT ? 'bg-[#0f2010]' : isSelected ? 'bg-[#0a1e10] border-l-2 border-l-[#22c55e]' : 'hover:bg-[#0d1a0e]',
       ].join(' ')}
-      onClick={() => onSeek(action.start)}
+      onClick={() => { onSeek(action.start); onSelect?.(action.id); }}
     >
       <span className="text-[#4a7a4e] flex-shrink-0 w-3">{kindIcon}</span>
       <span className={['font-bold w-5 flex-shrink-0', isAtT ? 'text-[#22c55e]' : 'text-[#86efac]'].join(' ')}>{actor}</span>
@@ -190,8 +194,12 @@ export default function EditorPage() {
     document: doc,
     tool,
     selectedEntityId,
+    selectedActionId,
+    lastCreatedActionId,
     setTool,
     setSelected,
+    selectAction,
+    setActionCurve,
     addPlayer,
     addBall,
     moveEntity,
@@ -210,6 +218,7 @@ export default function EditorPage() {
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [draggingApex, setDraggingApex] = useState<{ x: number; y: number } | null>(null);
 
   const playingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
@@ -347,6 +356,25 @@ export default function EditorPage() {
     const result: ActionOverlay[] = [];
     for (const a of doc.actions) {
       const active = t >= a.start && t <= a.start + a.duration;
+      const isSelected = selectedActionId === a.id;
+
+      // Bezier control point: live preview during apex drag, else stored path.
+      let cx: number | undefined;
+      let cy: number | undefined;
+      if (a.kind === 'run' || a.kind === 'carry' || a.kind === 'pass') {
+        if (isSelected && draggingApex) {
+          const chordPts = getActionChordEndpoints(doc, a.id);
+          if (chordPts) {
+            const mx = (chordPts.start.x + chordPts.end.x) / 2;
+            const my = (chordPts.start.y + chordPts.end.y) / 2;
+            cx = 2 * draggingApex.x - mx;
+            cy = 2 * draggingApex.y - my;
+          }
+        } else if (a.path.type === 'bezier') {
+          cx = a.path.cx;
+          cy = a.path.cy;
+        }
+      }
 
       if (a.kind === 'pass') {
         const passerPos = resolvePosition(doc, a.entityId, a.start);
@@ -358,20 +386,38 @@ export default function EditorPage() {
         } else {
           to = { x: a.target.x, y: a.target.y };
         }
-        result.push({ id: a.id, kind: 'pass', x1: from.x, y1: from.y, x2: to.x, y2: to.y, active });
+        result.push({ id: a.id, kind: 'pass', x1: from.x, y1: from.y, x2: to.x, y2: to.y, active, selected: isSelected, cx, cy });
 
       } else if (a.kind === 'run' && 'x' in a.destination) {
         const startPos = resolvePosition(doc, a.entityId, a.start);
-        result.push({ id: a.id, kind: 'run', x1: startPos.x, y1: startPos.y, x2: a.destination.x, y2: a.destination.y, active });
+        result.push({ id: a.id, kind: 'run', x1: startPos.x, y1: startPos.y, x2: a.destination.x, y2: a.destination.y, active, selected: isSelected, cx, cy });
 
       } else if (a.kind === 'carry' && a.destination != null) {
         const startPos = resolvePosition(doc, a.entityId, a.start);
         const from = perim(startPos.x, startPos.y, eRadius(a.entityId));
-        result.push({ id: a.id, kind: 'carry', x1: from.x, y1: from.y, x2: a.destination.x, y2: a.destination.y, active });
+        result.push({ id: a.id, kind: 'carry', x1: from.x, y1: from.y, x2: a.destination.x, y2: a.destination.y, active, selected: isSelected, cx, cy });
       }
     }
     return result;
-  }, [doc, t]);
+  }, [doc, t, selectedActionId, draggingApex]);
+
+  // ── Apex dot position — chord midpoint for straight, B(0.5) for bezier ───
+  // Depends only on doc + selectedActionId (not draggingApex) so Konva's drag
+  // doesn't fight React re-renders during the drag.
+  const apexDotPosition = useMemo(() => {
+    if (!selectedActionId) return null;
+    const action = doc.actions.find((a) => a.id === selectedActionId);
+    if (!action || (action.kind !== 'run' && action.kind !== 'carry' && action.kind !== 'pass')) return null;
+    const endpoints = getActionChordEndpoints(doc, selectedActionId);
+    if (!endpoints) return null;
+    const { start: p0, end: p2 } = endpoints;
+    if (action.path.type === 'bezier') {
+      const { cx, cy } = action.path;
+      // B(0.5) = 0.25·P0 + 0.5·P1 + 0.25·P2
+      return { x: 0.25 * p0.x + 0.5 * cx + 0.25 * p2.x, y: 0.25 * p0.y + 0.5 * cy + 0.25 * p2.y };
+    }
+    return { x: (p0.x + p2.x) / 2, y: (p0.y + p2.y) / 2 };
+  }, [selectedActionId, doc]);
 
   // ── DIAGNOSTIC: ball-hidden-under-marker assertion ─────────────────────────
   const ballHidden = useMemo(() => {
@@ -394,6 +440,16 @@ export default function EditorPage() {
       }
     }
   }, [ballHidden, ownerAtT, t]);
+
+  // ── Apex dot state effects ────────────────────────────────────────────────
+
+  // Reset dragging preview when action selection changes.
+  useEffect(() => { setDraggingApex(null); }, [selectedActionId]);
+
+  // Auto-select a newly authored action.
+  useEffect(() => {
+    if (lastCreatedActionId) selectAction(lastCreatedActionId);
+  }, [lastCreatedActionId, selectAction]);
 
   // ── Ghost drag line + gesture hint ────────────────────────────────────────
 
@@ -474,6 +530,9 @@ export default function EditorPage() {
 
     switch (tool) {
       case 'select':
+        setSelected(hitId);
+        if (!hitId) selectAction(null);
+        break;
       case 'author':
         setSelected(hitId);
         break;
@@ -632,6 +691,16 @@ export default function EditorPage() {
           ballHidden={ballHidden}
           onBoardPointerMove={(x, y) => setCursorPos({ x, y })}
           showBall={!!ballEntityId}
+          onOverlayClick={(id) => selectAction(id === selectedActionId ? null : id)}
+          apexDot={apexDotPosition ? {
+            x: apexDotPosition.x,
+            y: apexDotPosition.y,
+            onDragMove: (x, y) => setDraggingApex({ x, y }),
+            onDragEnd: (x, y) => {
+              setDraggingApex(null);
+              if (selectedActionId) setActionCurve(selectedActionId, x, y);
+            },
+          } : null}
         />
 
         {/* ── Live state readout strip ──────────────────────────────────────── */}
@@ -741,9 +810,11 @@ export default function EditorPage() {
                 action={a}
                 doc={doc}
                 isAtT={Math.abs(a.start - t) < 0.001}
+                isSelected={selectedActionId === a.id}
                 onUpdate={updateAction}
                 onDelete={deleteAction}
                 onSeek={(time) => { pause(); seekTo(time); }}
+                onSelect={selectAction}
               />
             ))
           )}
