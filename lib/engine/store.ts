@@ -11,7 +11,7 @@ import {
   makeCarry,
   makeBeat,
 } from './factory';
-import { resolveOwnerAtT } from './resolve';
+import { resolveOwnerAtT, resolvePosition } from './resolve';
 import type { GafferDocument } from './types';
 
 export type Tool = 'select' | 'player' | 'ball' | 'author';
@@ -71,6 +71,54 @@ export function computeCurrentOwner(doc: GafferDocument): string | null {
   return null;
 }
 
+/** Returns the perpendicular distance from point (px,py) to segment (ax,ay)→(bx,by). */
+function distanceToSegment(
+  px: number, py: number,
+  ax: number, ay: number,
+  bx: number, by: number,
+): number {
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/**
+ * Returns the chord start/end points for an action, used to compute bezier control points.
+ * Run/Carry: entity position at action.start → destination.
+ * Pass: passer center at action.start → receiver center at action.start + action.duration.
+ */
+export function getActionChordEndpoints(
+  doc: GafferDocument,
+  actionId: string,
+): { start: { x: number; y: number }; end: { x: number; y: number } } | null {
+  const action = doc.actions.find((a) => a.id === actionId);
+  if (!action) return null;
+  if (action.kind === 'run') {
+    if (!('x' in action.destination)) return null;
+    return {
+      start: resolvePosition(doc, action.entityId, action.start),
+      end: action.destination as { x: number; y: number },
+    };
+  }
+  if (action.kind === 'carry') {
+    if (!action.destination) return null;
+    return {
+      start: resolvePosition(doc, action.entityId, action.start),
+      end: action.destination,
+    };
+  }
+  if (action.kind === 'pass') {
+    const start = resolvePosition(doc, action.entityId, action.start);
+    const end = 'entityId' in action.target
+      ? resolvePosition(doc, action.target.entityId, action.start + action.duration)
+      : { x: action.target.x, y: action.target.y };
+    return { start, end };
+  }
+  return null;
+}
+
 /** Push doc onto history, capped at UNDO_LIMIT entries. */
 function pushHistory(history: GafferDocument[], doc: GafferDocument): GafferDocument[] {
   const next = [...history, doc];
@@ -84,6 +132,8 @@ export interface EditorStore {
   pendingSourceId: string | null;
   undoHistory: GafferDocument[];
   canUndo: boolean;
+  selectedActionId: string | null;
+  lastCreatedActionId: string | null;
 
   setTool: (tool: Tool) => void;
   setSelected: (id: string | null) => void;
@@ -106,6 +156,9 @@ export interface EditorStore {
   /** Remove entity + any actions that reference it. Deleting the ball also removes all carry/pass actions. */
   deleteEntity: (id: string) => void;
   undo: () => void;
+  selectAction: (id: string | null) => void;
+  /** Set the bezier curve for an action by specifying an apex point (or null to straighten). */
+  setActionCurve: (actionId: string, apexX: number | null, apexY: number | null) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set) => ({
@@ -115,6 +168,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
   pendingSourceId: null,
   undoHistory: [],
   canUndo: false,
+  selectedActionId: null,
+  lastCreatedActionId: null,
 
   setTool: (tool) => set({ tool, pendingSourceId: null }),
   setSelected: (id) => set({ selectedEntityId: id }),
@@ -204,6 +259,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
         pendingSourceId: null,
+        lastCreatedActionId: pass.id,
       };
     }),
 
@@ -224,6 +280,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
         pendingSourceId: null,
+        lastCreatedActionId: run.id,
       };
     }),
 
@@ -247,6 +304,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
         pendingSourceId: null,
+        lastCreatedActionId: carry.id,
       };
     }),
 
@@ -306,6 +364,43 @@ export const useEditorStore = create<EditorStore>((set) => ({
         canUndo: history.length > 0,
         selectedEntityId: null,
         pendingSourceId: null,
+        selectedActionId: null,
+        lastCreatedActionId: null,
+      };
+    }),
+
+  selectAction: (id) => set({ selectedActionId: id }),
+
+  setActionCurve: (actionId, apexX, apexY) =>
+    set((state) => {
+      const action = state.document.actions.find((a) => a.id === actionId);
+      if (!action) return state;
+      if (action.kind !== 'run' && action.kind !== 'carry' && action.kind !== 'pass') return state;
+      const endpoints = getActionChordEndpoints(state.document, actionId);
+      if (!endpoints) return state;
+      const { start: startPt, end: endPt } = endpoints;
+      const mx = (startPt.x + endPt.x) / 2;
+      const my = (startPt.y + endPt.y) / 2;
+      let newPath: { type: 'straight' } | { type: 'bezier'; cx: number; cy: number };
+      if (apexX == null || apexY == null) {
+        newPath = { type: 'straight' };
+      } else {
+        const dist = distanceToSegment(apexX, apexY, startPt.x, startPt.y, endPt.x, endPt.y);
+        if (dist <= 8) {
+          newPath = { type: 'straight' };
+        } else {
+          newPath = { type: 'bezier', cx: 2 * apexX - mx, cy: 2 * apexY - my };
+        }
+      }
+      return {
+        document: {
+          ...state.document,
+          actions: state.document.actions.map((a) =>
+            a.id === actionId ? { ...a, path: newPath } : a,
+          ),
+        },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
       };
     }),
 }));
