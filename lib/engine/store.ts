@@ -134,6 +134,8 @@ export interface EditorStore {
   canUndo: boolean;
   selectedActionId: string | null;
   lastCreatedActionId: string | null;
+  /** History depth at the point the last action was created — used to detect intervening mutations. */
+  lastCreatedUndoDepth: number;
 
   setTool: (tool: Tool) => void;
   setSelected: (id: string | null) => void;
@@ -170,6 +172,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
   canUndo: false,
   selectedActionId: null,
   lastCreatedActionId: null,
+  lastCreatedUndoDepth: 0,
 
   setTool: (tool) => set({ tool, pendingSourceId: null }),
   setSelected: (id) => set({ selectedEntityId: id }),
@@ -251,15 +254,17 @@ export const useEditorStore = create<EditorStore>((set) => ({
         start: startT,
         duration,
       });
+      const newHistory = pushHistory(state.undoHistory, state.document);
       return {
         document: {
           ...state.document,
           actions: [...state.document.actions, pass],
         },
-        undoHistory: pushHistory(state.undoHistory, state.document),
+        undoHistory: newHistory,
         canUndo: true,
         pendingSourceId: null,
         lastCreatedActionId: pass.id,
+        lastCreatedUndoDepth: newHistory.length,
       };
     }),
 
@@ -272,15 +277,17 @@ export const useEditorStore = create<EditorStore>((set) => ({
         start: startT,
         duration: 1.5,
       });
+      const newHistory = pushHistory(state.undoHistory, state.document);
       return {
         document: {
           ...state.document,
           actions: [...state.document.actions, run],
         },
-        undoHistory: pushHistory(state.undoHistory, state.document),
+        undoHistory: newHistory,
         canUndo: true,
         pendingSourceId: null,
         lastCreatedActionId: run.id,
+        lastCreatedUndoDepth: newHistory.length,
       };
     }),
 
@@ -296,15 +303,17 @@ export const useEditorStore = create<EditorStore>((set) => ({
         start: startT,
         duration: 1.0,
       });
+      const newHistory = pushHistory(state.undoHistory, state.document);
       return {
         document: {
           ...state.document,
           actions: [...state.document.actions, carry],
         },
-        undoHistory: pushHistory(state.undoHistory, state.document),
+        undoHistory: newHistory,
         canUndo: true,
         pendingSourceId: null,
         lastCreatedActionId: carry.id,
+        lastCreatedUndoDepth: newHistory.length,
       };
     }),
 
@@ -366,6 +375,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
         pendingSourceId: null,
         selectedActionId: null,
         lastCreatedActionId: null,
+        lastCreatedUndoDepth: 0,
       };
     }),
 
@@ -392,6 +402,14 @@ export const useEditorStore = create<EditorStore>((set) => ({
           newPath = { type: 'bezier', cx: 2 * apexX - mx, cy: 2 * apexY - my };
         }
       }
+      // Fold into the creation snapshot when no other mutation has intervened since
+      // the action was created — so one undo removes the drawn+curved action entirely.
+      const isJustCreated =
+        actionId === state.lastCreatedActionId &&
+        state.undoHistory.length === state.lastCreatedUndoDepth;
+      const newUndoHistory = isJustCreated
+        ? state.undoHistory
+        : pushHistory(state.undoHistory, state.document);
       return {
         document: {
           ...state.document,
@@ -399,8 +417,11 @@ export const useEditorStore = create<EditorStore>((set) => ({
             a.id === actionId ? { ...a, path: newPath } : a,
           ),
         },
-        undoHistory: pushHistory(state.undoHistory, state.document),
-        canUndo: true,
+        undoHistory: newUndoHistory,
+        canUndo: newUndoHistory.length > 0,
+        // After folding, clear the "just created" marker so a second curve on the
+        // same action pushes a normal undo entry.
+        ...(isJustCreated ? { lastCreatedActionId: null, lastCreatedUndoDepth: 0 } : {}),
       };
     }),
 }));

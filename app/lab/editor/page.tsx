@@ -493,10 +493,15 @@ export default function EditorPage() {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-      // Delete / Backspace — remove selected entity in select mode
+      // Delete / Backspace — remove selected entity or action in select mode
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (tool === 'select' && selectedEntityId && !playing) {
-          deleteEntity(selectedEntityId);
+        if (tool === 'select' && !playing) {
+          if (selectedEntityId) {
+            deleteEntity(selectedEntityId);
+          } else if (selectedActionId) {
+            deleteAction(selectedActionId);
+            selectAction(null);
+          }
         }
         return;
       }
@@ -509,7 +514,7 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [tool, selectedEntityId, playing, deleteEntity, canUndo, undo]);
+  }, [tool, selectedEntityId, selectedActionId, playing, deleteEntity, deleteAction, selectAction, canUndo, undo]);
 
   // ── Board interaction ──────────────────────────────────────────────────────
 
@@ -531,7 +536,8 @@ export default function EditorPage() {
     switch (tool) {
       case 'select':
         setSelected(hitId);
-        if (!hitId) selectAction(null);
+        // Entity click always clears action selection — only one can be active at a time.
+        selectAction(null);
         break;
       case 'author':
         setSelected(hitId);
@@ -691,8 +697,14 @@ export default function EditorPage() {
           ballHidden={ballHidden}
           onBoardPointerMove={(x, y) => setCursorPos({ x, y })}
           showBall={!!ballEntityId}
-          onOverlayClick={(id) => selectAction(id === selectedActionId ? null : id)}
-          apexDot={apexDotPosition ? {
+          // Overlays and apex dot are only interactive in Select mode.
+          // In Author mode (and all other modes) they are non-interactive so they
+          // cannot intercept authoring drag gestures.
+          onOverlayClick={tool === 'select' ? (id) => {
+            setSelected(null); // clicking an overlay clears entity selection
+            selectAction(id === selectedActionId ? null : id);
+          } : undefined}
+          apexDot={tool === 'select' && apexDotPosition ? {
             x: apexDotPosition.x,
             y: apexDotPosition.y,
             onDragMove: (x, y) => setDraggingApex({ x, y }),
@@ -814,7 +826,7 @@ export default function EditorPage() {
                 onUpdate={updateAction}
                 onDelete={deleteAction}
                 onSeek={(time) => { pause(); seekTo(time); }}
-                onSelect={selectAction}
+                onSelect={(id) => { setSelected(null); selectAction(id); }}
               />
             ))
           )}
