@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { deserializeDocument } from '@/lib/engine/serialize';
 import type { GafferDocument } from '@/lib/engine/types';
 
-const TABLE = 'gaffer_documents';
+const TABLE = 'documents';
 
 function db() {
   return createClient(
