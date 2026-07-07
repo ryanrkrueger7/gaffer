@@ -215,6 +215,7 @@ export default function EditorPage() {
     deleteAction,
     deleteEntity,
     loadDocument,
+    renameDocument,
     undo,
     canUndo,
   } = useEditorStore();
@@ -677,7 +678,14 @@ export default function EditorPage() {
 
   async function commitRename() {
     if (!renamingId || !renameStr.trim()) { setRenamingId(null); return; }
-    await renameDoc(renamingId, renameStr.trim());
+    const newName = renameStr.trim();
+    await renameDoc(renamingId, newName);
+    // If the row being renamed is the currently loaded document, keep
+    // doc.meta.name in sync so a subsequent saveDoc doesn't revert the name.
+    const renamingRow = docsList.find((d) => d.id === renamingId);
+    if (renamingRow && renamingRow.doc_id === doc.meta.id) {
+      renameDocument(newName);
+    }
     setRenamingId(null);
     refreshDocs();
   }

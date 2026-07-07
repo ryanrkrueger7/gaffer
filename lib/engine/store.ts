@@ -161,6 +161,8 @@ export interface EditorStore {
   selectAction: (id: string | null) => void;
   /** Set the bezier curve for an action by specifying an apex point (or null to straighten). */
   setActionCurve: (actionId: string, apexX: number | null, apexY: number | null) => void;
+  /** Update doc.meta.name on the live document (mirror of a DB rename). */
+  renameDocument: (name: string) => void;
   /** Replace the current document entirely (e.g. loading from persistence). Resets all transient state. */
   loadDocument: (doc: GafferDocument) => void;
 }
@@ -382,6 +384,14 @@ export const useEditorStore = create<EditorStore>((set) => ({
     }),
 
   selectAction: (id) => set({ selectedActionId: id }),
+
+  renameDocument: (name) =>
+    set((state) => ({
+      document: {
+        ...state.document,
+        meta: { ...state.document.meta, name },
+      },
+    })),
 
   loadDocument: (doc) =>
     set({
