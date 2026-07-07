@@ -26,7 +26,7 @@ export async function saveDoc(doc: GafferDocument): Promise<{ error?: string }> 
     .upsert(
       {
         doc_id: doc.meta.id,
-        name: doc.meta.name,
+        name: doc.meta.name || 'Untitled',
         doc: doc as unknown as Record<string, unknown>,
         updated_at: new Date().toISOString(),
       },
@@ -36,10 +36,11 @@ export async function saveDoc(doc: GafferDocument): Promise<{ error?: string }> 
 }
 
 export async function listDocs(): Promise<DocSummary[]> {
-  const { data } = await db()
+  const { data, error } = await db()
     .from(TABLE)
     .select('id, doc_id, name, updated_at')
     .order('updated_at', { ascending: false });
+  if (error) console.error('[Gaffer] listDocs failed:', error.message);
   return (data as DocSummary[]) ?? [];
 }
 

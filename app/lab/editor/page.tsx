@@ -229,6 +229,7 @@ export default function EditorPage() {
 
   // ── Persistence state ──────────────────────────────────────────────────────
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveErrorMsg, setSaveErrorMsg] = useState<string | null>(null);
   const [docsOpen, setDocsOpen] = useState(false);
   const [docsList, setDocsList] = useState<DocSummary[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
@@ -646,10 +647,17 @@ export default function EditorPage() {
 
   async function handleSave() {
     setSaveStatus('saving');
+    setSaveErrorMsg(null);
     const result = await saveDoc(doc);
-    setSaveStatus(result.error ? 'error' : 'saved');
-    setTimeout(() => setSaveStatus('idle'), 2000);
-    if (docsOpen) refreshDocs();
+    if (result.error) {
+      console.error('[Gaffer] saveDoc failed:', result.error);
+      setSaveErrorMsg(result.error);
+      setSaveStatus('error');
+    } else {
+      setSaveStatus('saved');
+      if (docsOpen) refreshDocs();
+    }
+    setTimeout(() => setSaveStatus('idle'), 3000);
   }
 
   async function refreshDocs() {
@@ -874,7 +882,13 @@ export default function EditorPage() {
           <span>ACTIONS</span>
           <div className="flex items-center gap-2">
             <button
-              title={saveStatus === 'saving' ? 'Saving…' : 'Save document (Ctrl+S)'}
+              title={
+                saveStatus === 'error' && saveErrorMsg
+                  ? `Save failed: ${saveErrorMsg}`
+                  : saveStatus === 'saving'
+                  ? 'Saving…'
+                  : 'Save document'
+              }
               onClick={handleSave}
               disabled={saveStatus === 'saving'}
               className={[
@@ -885,7 +899,10 @@ export default function EditorPage() {
               ].join(' ')}
             >
               <Save size={11} />
-              {saveStatus === 'saving' ? 'saving…' : saveStatus === 'saved' ? 'saved' : saveStatus === 'error' ? 'error' : 'save'}
+              {saveStatus === 'saving' ? 'saving…'
+                : saveStatus === 'saved' ? 'saved'
+                : saveStatus === 'error' ? (saveErrorMsg ? `err: ${saveErrorMsg.slice(0, 28)}` : 'error')
+                : 'save'}
             </button>
             <span style={{ fontWeight: 400, color: '#2d5a30', letterSpacing: 0 }}>start · dur</span>
           </div>
