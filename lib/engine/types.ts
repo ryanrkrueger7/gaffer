@@ -23,6 +23,7 @@ export interface PlayerEntity extends EntityBase {
     jerseyNumber?: number | null;
     drillLabel?: string | null;
     roleName?: string | null;
+    inferredPositionId?: string | null;
   };
 }
 
