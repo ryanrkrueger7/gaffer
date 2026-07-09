@@ -6,9 +6,9 @@ export type PositionId =
   | 'LB' | 'CB' | 'LCB' | 'RCB' | 'RB' | 'LWB' | 'RWB'
   | 'CDM'
   | 'LM' | 'CM' | 'RM'
-  | 'CAM' | 'LAM' | 'RAM'
+  | 'CAM'
   | 'LW' | 'RW'
-  | 'ST' | 'CF' | 'SS';
+  | 'ST' | 'CF';
 
 export type Third = 'defensive' | 'middle' | 'attacking';
 export type Flank = 'left' | 'center' | 'right';

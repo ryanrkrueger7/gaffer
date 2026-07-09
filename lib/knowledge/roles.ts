@@ -15,9 +15,10 @@ export interface PositionEntry extends DictionaryEntry {
 }
 
 // ── Role entries ──────────────────────────────────────────────────────────────
-// One entry per PositionId currently defined in formations.ts (20 total).
+// One entry per PositionId currently defined in formations.ts (17 total).
 // id format: 'position.<position_id_lowercase>'
-// Positions NOT in the original spec alias list (added by inference): LAM, RAM, CF, SS.
+// Position added beyond original spec alias list: CF (used in 3-4-3).
+// LAM, RAM, SS removed — no formation uses them.
 //
 // ALIAS COLLISION NOTES
 // Intentional multi-maps (both entries should return for these terms):
@@ -150,23 +151,6 @@ export const ROLE_ENTRIES: PositionEntry[] = [
     aliases: ['CAM', 'attacking midfielder', 'attacking mid', 'number 10', 'the 10', 'playmaker', '10'],
     definition: 'A creative midfielder who plays between the lines, linking midfield to attack by finding pockets of space and threading balls through to the strikers.',
   },
-  {
-    kind: 'position',
-    positionId: 'LAM',
-    id: 'position.lam',
-    term: 'Left Attacking Midfielder',
-    aliases: ['LAM', 'left attacking midfielder', 'left attacking mid', 'left 10', 'left playmaker'],
-    definition: 'An attacking midfielder deployed on the left half-space, combining the creativity of a number 10 with a wider starting position.',
-  },
-  {
-    kind: 'position',
-    positionId: 'RAM',
-    id: 'position.ram',
-    term: 'Right Attacking Midfielder',
-    aliases: ['RAM', 'right attacking midfielder', 'right attacking mid', 'right 10', 'right playmaker'],
-    definition: 'An attacking midfielder deployed on the right half-space, combining the creativity of a number 10 with a wider starting position.',
-  },
-
   // ── Wide attackers ──────────────────────────────────────────────────────────
   {
     kind: 'position',
@@ -204,15 +188,6 @@ export const ROLE_ENTRIES: PositionEntry[] = [
     term: 'Center Forward',
     aliases: ['CF', 'false nine', 'false 9', 'target man'],
     definition: 'A central attacker who combines goal-scoring with link-up play, often dropping deep or drifting wide to create space for teammates.',
-  },
-  {
-    // "the 10" removed — that alias belongs to CAM unambiguously.
-    kind: 'position',
-    positionId: 'SS',
-    id: 'position.ss',
-    term: 'Second Striker',
-    aliases: ['SS', 'second striker', 'support striker', 'shadow striker', '9 and a half'],
-    definition: 'An attacker who plays just behind the main striker, dropping into space between the lines to receive, combine, and create goal-scoring opportunities.',
   },
 ] satisfies PositionEntry[];
 

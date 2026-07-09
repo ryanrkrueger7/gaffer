@@ -47,12 +47,14 @@ function computeAxes(
       };
     case 'left':
       // Team attacks toward x = FIELD_X_MIN (left). Own goal at right.
+      // Facing west: team's left = south (higher y) → flankPos=0 at FIELD_Y_MAX.
       return {
         attackProgress: (FIELD_X_MAX - x) / fw,
-        flankPos: (y - FIELD_Y_MIN) / fh,
+        flankPos: (FIELD_Y_MAX - y) / fh,
       };
     case 'right':
       // Team attacks toward x = FIELD_X_MAX (right). Own goal at left.
+      // Facing east: team's left = north (lower y) → flankPos=0 at FIELD_Y_MIN.
       return {
         attackProgress: (x - FIELD_X_MIN) / fw,
         flankPos: (y - FIELD_Y_MIN) / fh,
@@ -81,6 +83,15 @@ const COARSE: Record<Third, Record<Flank, PositionId>> = {
 // attackProgress < this value → treat as GK regardless of formation or grid.
 // 0.10 × 580px ≈ 58px from the own goal line, covering the goal area depth.
 const GK_THRESHOLD = 0.10;
+
+// ── Suggestion display threshold ──────────────────────────────────────────────
+
+/**
+ * Minimum confidence value at which a position inference is considered reliable
+ * enough to surface as a ghost suggestion in the UI.
+ * Chat 3 should import this constant rather than hardcoding the numeric value.
+ */
+export const INFER_CONFIDENCE_THRESHOLD = 0.70;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 

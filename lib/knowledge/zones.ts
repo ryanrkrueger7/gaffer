@@ -68,6 +68,10 @@ export const ZONE_ENTRIES: ZoneEntry[] = [
   },
 
   // ── Half-spaces (strips between the central and wide channels) ─────────────
+  // Convention: when a point falls in the overlap between a half-space and a
+  // channel band, half-space takes priority (more specific tactical concept).
+  // No geometry-testing function exists yet to enforce this — documented for
+  // when one is built.
 
   {
     kind: 'zone',
