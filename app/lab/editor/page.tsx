@@ -81,10 +81,13 @@ function entityLabel(doc: GafferDocument, id: string): string {
   const e = doc.entities.find((e) => e.id === id);
   if (!e) return '?';
   if (e.kind === 'player') {
-    // Priority: jersey# → coaching role → position ID (GK-toggle / typed) → drill label → slot
+    // Priority: jersey# → roleName → positionId → inferredPositionId → drillLabel → slot.
+    // positionId  = user-typed PositionId via identity input (distinct bucket from inferredPositionId).
+    // inferredPositionId = system-only; written by inferPosition() in Part B.
     return (
       e.display?.jerseyNumber?.toString() ??
       e.display?.roleName ??
+      e.display?.positionId ??
       e.display?.inferredPositionId ??
       e.display?.drillLabel ??
       e.display?.positionSlot?.toString() ??
@@ -520,9 +523,9 @@ export default function EditorPage() {
       } else {
         const upper = val.toUpperCase();
         if (POSITION_ID_SET.has(upper)) {
-          // Known PositionId (GK, ST, CAM…) — goes to inferredPositionId, not roleName,
-          // so it stays in its own bucket and never clobbers a coaching label.
-          updatePlayerDisplay(entityId, { inferredPositionId: upper });
+          // Known PositionId (ST, CAM, GK…) — goes to positionId (user-typed position slot),
+          // never to inferredPositionId (system-only) or roleName (freeform coaching label).
+          updatePlayerDisplay(entityId, { positionId: upper });
         } else {
           // Freeform coaching label (e.g. "False 9", "Target Man") — goes to roleName.
           updatePlayerDisplay(entityId, { roleName: val });
@@ -1019,12 +1022,12 @@ export default function EditorPage() {
                       >×</button>
                     </span>
                   )}
-                  {overlayDocPlayer?.kind === 'player' && overlayDocPlayer.display?.inferredPositionId != null && (
+                  {overlayDocPlayer?.kind === 'player' && overlayDocPlayer.display?.positionId != null && (
                     <span style={{ display: 'flex', alignItems: 'center', gap: 2, background: '#0f2318', borderRadius: 3, padding: '1px 5px', fontSize: 11, color: '#4ade80', fontFamily: 'ui-monospace, monospace', border: '1px solid #2d5a30' }}>
-                      {overlayDocPlayer.display.inferredPositionId}
+                      {overlayDocPlayer.display.positionId}
                       <button
                         onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => updatePlayerDisplay(identityOverlay.entityId, { inferredPositionId: null })}
+                        onClick={() => updatePlayerDisplay(identityOverlay.entityId, { positionId: null })}
                         style={{ color: '#4a7a4e', fontSize: 10, cursor: 'pointer', background: 'none', border: 'none', padding: '0 0 0 2px', lineHeight: 1 }}
                         title="Remove position"
                       >×</button>

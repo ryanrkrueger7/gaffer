@@ -179,10 +179,13 @@ function PlayerMarker({ e, draggable, isSelected, isPending, isOwner, onDragEnd,
   const fill = teamFill(e.team, e.color);
   const stroke = teamStroke(e.team);
   const tc = contrastText(fill);
-  // Label priority: jersey# → coaching role → position ID (GK/ST/CAM…) → drill label → slot.
+  const isGk = e.display?.isGoalkeeper === true;
+  // Label priority: jersey# → roleName → positionId → inferredPositionId → drillLabel → slot.
+  // inferredPositionId is SYSTEM ONLY — written by inferPosition(). positionId is user-typed.
   const label =
     e.display?.jerseyNumber?.toString() ??
     e.display?.roleName ??
+    e.display?.positionId ??
     e.display?.inferredPositionId ??
     e.display?.drillLabel ??
     e.display?.positionSlot?.toString() ??
@@ -198,9 +201,16 @@ function PlayerMarker({ e, draggable, isSelected, isPending, isOwner, onDragEnd,
     >
       {/* Possession ring — shown when this player currently owns the ball */}
       {isOwner && <Circle radius={r + 7} stroke="#38bdf8" strokeWidth={1.5} fill="transparent" listening={false} opacity={0.55} />}
-      {isSelected && <Circle radius={r + 4} stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />}
-      {isPending && <Circle radius={r + 4} stroke="#f59e0b" strokeWidth={2} fill="transparent" listening={false} />}
-      <Circle radius={r} fill={fill} stroke={stroke} strokeWidth={1.5} />
+      {isSelected && (isGk
+        ? <Rect x={-(r + 4)} y={-(r + 4)} width={(r + 4) * 2} height={(r + 4) * 2} stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />
+        : <Circle radius={r + 4} stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />)}
+      {isPending && (isGk
+        ? <Rect x={-(r + 4)} y={-(r + 4)} width={(r + 4) * 2} height={(r + 4) * 2} stroke="#f59e0b" strokeWidth={2} fill="transparent" listening={false} />
+        : <Circle radius={r + 4} stroke="#f59e0b" strokeWidth={2} fill="transparent" listening={false} />)}
+      {/* GK: square marker; outfield: circle */}
+      {isGk
+        ? <Rect x={-r} y={-r} width={r * 2} height={r * 2} cornerRadius={3} fill={fill} stroke={stroke} strokeWidth={2} />
+        : <Circle radius={r} fill={fill} stroke={stroke} strokeWidth={1.5} />}
       {label.length > 0 && (
         <Text
           text={label}

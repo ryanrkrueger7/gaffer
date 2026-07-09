@@ -19,11 +19,13 @@ export interface PlayerEntity extends EntityBase {
   kind: 'player';
   initial: { x: number; y: number };
   display?: {
-    positionSlot?: number | null;
-    jerseyNumber?: number | null;
-    drillLabel?: string | null;
-    roleName?: string | null;
-    inferredPositionId?: string | null;
+    positionSlot?: number | null;           // formation slot number (system-assigned)
+    jerseyNumber?: number | null;           // manually entered jersey number
+    drillLabel?: string | null;             // auto-generated label (store)
+    roleName?: string | null;               // freeform coaching label ("False 9", etc.)
+    positionId?: string | null;             // manually entered PositionId ("ST", "CAM", …)
+    isGoalkeeper?: boolean;                 // GK-toggle flag — pure render hint, disjoint from identity
+    inferredPositionId?: string | null;     // SYSTEM ONLY — written by inferPosition(); never written by UI
   };
 }
 

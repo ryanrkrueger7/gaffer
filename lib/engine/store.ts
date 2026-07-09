@@ -230,9 +230,11 @@ export const useEditorStore = create<EditorStore>((set) => ({
         initial: { x, y },
         display: {
           drillLabel: String(count + 1),
-          // GK toggle writes to inferredPositionId, not roleName — non-destructive:
-          // it never overwrites a coaching label the user set in the identity input.
-          ...(state.placementIsGk ? { inferredPositionId: 'GK' } : {}),
+          // GK toggle sets isGoalkeeper only — a pure render flag entirely disjoint
+          // from the identity fields (jerseyNumber, roleName, positionId) and from
+          // inferredPositionId (system-only). A "#1" typed via the identity input
+          // afterwards writes only to jerseyNumber and has zero interaction with this flag.
+          ...(state.placementIsGk ? { isGoalkeeper: true } : {}),
         },
       });
       return {
