@@ -4,6 +4,7 @@
 // action counts as a goal. That is a future consumer's job.
 
 import type { DictionaryEntry } from './types';
+import { assertUniqueIds } from './types';
 
 // ── Scoring entries ───────────────────────────────────────────────────────────
 
@@ -37,3 +38,5 @@ export const SCORING_ENTRIES: DictionaryEntry[] = [
     definition: 'There is no scoring target; success is defined by retaining possession for a set number of passes, a set duration, or until the coach signals — used in rondos, possession drills, and warm-ups.',
   },
 ] satisfies DictionaryEntry[];
+
+assertUniqueIds(SCORING_ENTRIES);

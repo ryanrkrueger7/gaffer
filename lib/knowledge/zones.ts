@@ -8,6 +8,7 @@
 // future cleanup pass.
 
 import type { DictionaryEntry } from './types';
+import { assertUniqueIds } from './types';
 
 // ── Field boundary reference (mirrors positionInference.ts) ──────────────────
 // FIELD_X_MIN=10, FIELD_X_MAX=790, FIELD_Y_MIN=10, FIELD_Y_MAX=590.
@@ -168,3 +169,5 @@ export const ZONE_ENTRIES: ZoneEntry[] = [
     },
   },
 ] satisfies ZoneEntry[];
+
+assertUniqueIds(ZONE_ENTRIES);
