@@ -28,11 +28,12 @@ import {
 import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
 import { ROLE_ENTRIES } from '@/lib/knowledge';
+import { inferPosition, INFER_CONFIDENCE_THRESHOLD } from '@/lib/knowledge/positionInference';
 import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions/documents';
 import type { DocSummary } from '@/app/actions/documents';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
 import type { EntitySnapshot } from '@/lib/engine/resolve';
-import type { GafferDocument, Action } from '@/lib/engine/types';
+import type { GafferDocument, Action, PlayerEntity } from '@/lib/engine/types';
 import type { BoardRendererProps, ActionOverlay } from '@/components/engine/BoardRenderer';
 
 const BoardRenderer = dynamic<BoardRendererProps>(
@@ -61,6 +62,13 @@ const BoardRenderer = dynamic<BoardRendererProps>(
 
 // Known position IDs for identity parsing (e.g. "ST", "CAM").
 const POSITION_ID_SET = new Set<string>(ROLE_ENTRIES.map((e) => e.positionId));
+
+/** Constructs the scoringDirection Record expected by inferPosition().
+ *  doc.stage.direction is the team-A attacking direction; B is the opposite. */
+function buildScoringDirection(direction: 'up' | 'down'): Record<string, 'up' | 'down'> {
+  const opp: 'up' | 'down' = direction === 'up' ? 'down' : 'up';
+  return { A: direction, B: opp, neutral: direction };
+}
 
 const HIT_RADIUS = 22;
 const DEFAULT_ENTITY_RADIUS = 22;
@@ -264,6 +272,14 @@ export default function EditorPage() {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const identityEscapedRef = useRef(false);
+
+  // Inference confidence — maps entityId → confidence score from the last inferPosition() call.
+  // Not persisted; purely transient UI state. Ghost labels are only shown when conf ≥ INFER_CONFIDENCE_THRESHOLD.
+  const [inferenceConfidenceMap, setInferenceConfidenceMap] = useState<Map<string, number>>(() => new Map());
+  // docRef lets inference effects read the current doc without listing it as a dependency
+  // (avoids infinite loops when updatePlayerDisplay patches doc, which re-triggers effects).
+  const docRef = useRef(doc);
+  docRef.current = doc;
 
   const playingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
@@ -506,6 +522,19 @@ export default function EditorPage() {
     }
   }, [lastCreatedEntityId]);
 
+  // Run position inference on placement. Uses docRef to avoid retriggering when
+  // updatePlayerDisplay (called below) patches the doc.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!lastCreatedEntityId) return;
+    const entity = docRef.current.entities.find((e) => e.id === lastCreatedEntityId);
+    if (entity?.kind !== 'player') return;
+    const scoringDir = buildScoringDirection(docRef.current.stage.direction);
+    const { position, confidence } = inferPosition(entity.initial.x, entity.initial.y, entity.team ?? 'neutral', scoringDir);
+    updatePlayerDisplay(lastCreatedEntityId, { inferredPositionId: position });
+    setInferenceConfidenceMap((prev) => { const next = new Map(prev); next.set(lastCreatedEntityId, confidence); return next; });
+  }, [lastCreatedEntityId, updatePlayerDisplay]);
+
   // Focus the input as soon as the overlay opens in input mode.
   useEffect(() => {
     if (identityOverlay?.mode === 'input') {
@@ -659,9 +688,18 @@ export default function EditorPage() {
     if (playing) return;
 
     switch (tool) {
-      case 'select':
+      case 'select': {
         moveEntity(id, x, y);
+        // Re-infer position after drag — entity.team is on the doc entity, not snapshot.
+        const movedEntity = doc.entities.find((e) => e.id === id);
+        if (movedEntity?.kind === 'player') {
+          const scoringDir = buildScoringDirection(doc.stage.direction);
+          const { position, confidence } = inferPosition(x, y, movedEntity.team ?? 'neutral', scoringDir);
+          updatePlayerDisplay(id, { inferredPositionId: position });
+          setInferenceConfidenceMap((prev) => { const next = new Map(prev); next.set(id, confidence); return next; });
+        }
         break;
+      }
 
       case 'author': {
         // inferGesture: ball/owner source → pass (onto player) or carry (into space)
@@ -928,6 +966,53 @@ export default function EditorPage() {
               },
             } : null}
           />
+
+          {/* Ghost position suggestion overlays — faint/dashed, shown only when:
+               • inferredPositionId is set  • confidence ≥ threshold  • no explicit identity */}
+          {boardState.entities
+            .filter((snapshot) => {
+              const docEntity = doc.entities.find((e) => e.id === snapshot.id);
+              if (docEntity?.kind !== 'player') return false;
+              const d = (docEntity as PlayerEntity).display;
+              if (!d?.inferredPositionId) return false;
+              if (d.jerseyNumber != null || d.roleName != null || d.positionId != null) return false;
+              const conf = inferenceConfidenceMap.get(snapshot.id);
+              if (conf === undefined || conf < INFER_CONFIDENCE_THRESHOLD) return false;
+              if (identityOverlay?.entityId === snapshot.id) return false;
+              return true;
+            })
+            .map((snapshot) => {
+              const docEntity = doc.entities.find((e) => e.id === snapshot.id) as PlayerEntity;
+              const inferredPosId = docEntity.display!.inferredPositionId!;
+              const r = snapshot.radius ?? 22;
+              return (
+                <div
+                  key={snapshot.id}
+                  onClick={() => updatePlayerDisplay(snapshot.id, { positionId: inferredPosId })}
+                  title={`Suggested: ${inferredPosId} — click to confirm`}
+                  style={{
+                    position: 'absolute',
+                    left: Math.round(snapshot.x),
+                    top: Math.round(snapshot.y - r - 8),
+                    transform: 'translate(-50%, -100%)',
+                    zIndex: 9,
+                    pointerEvents: 'auto',
+                    cursor: 'pointer',
+                    background: 'rgba(13,26,15,0.85)',
+                    border: '1px dashed #4a7a4e',
+                    borderRadius: 3,
+                    padding: '1px 5px',
+                    fontSize: 10,
+                    fontFamily: 'ui-monospace, monospace',
+                    fontStyle: 'italic',
+                    color: '#4a7a4e',
+                    userSelect: 'none',
+                  }}
+                >
+                  {inferredPosId}
+                </div>
+              );
+            })}
 
           {/* Identity overlay — anchored to the player marker */}
           {identityOverlay && overlaySnapshot && (
