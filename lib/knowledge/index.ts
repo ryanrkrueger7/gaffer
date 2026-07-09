@@ -9,6 +9,7 @@ import { assertUniqueIds } from './types';
 export { ROLE_ENTRIES, resolveTerm } from './roles';
 export { ZONE_ENTRIES } from './zones';
 export { SCORING_ENTRIES } from './scoring';
+export { inferPosition, INFER_CONFIDENCE_THRESHOLD } from './positionInference';
 export type { DictionaryEntry } from './types';
 export { assertUniqueIds } from './types';
 export type { PositionEntry } from './roles';
