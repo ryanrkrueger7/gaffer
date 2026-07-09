@@ -65,7 +65,7 @@ const POSITION_ID_SET = new Set<string>(ROLE_ENTRIES.map((e) => e.positionId));
 
 /** Constructs the scoringDirection Record expected by inferPosition().
  *  doc.stage.direction is the team-A attacking direction; B is the opposite. */
-function buildScoringDirection(direction: 'up' | 'down'): Record<string, 'up' | 'down'> {
+function buildScoringDirection(direction: 'up' | 'down'): Record<string, 'up' | 'down' | 'left' | 'right'> {
   const opp: 'up' | 'down' = direction === 'up' ? 'down' : 'up';
   return { A: direction, B: opp, neutral: direction };
 }
