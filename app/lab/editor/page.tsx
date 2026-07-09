@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
+import { ROLE_ENTRIES } from '@/lib/knowledge';
 import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions/documents';
 import type { DocSummary } from '@/app/actions/documents';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
@@ -58,6 +59,9 @@ const BoardRenderer = dynamic<BoardRendererProps>(
   },
 );
 
+// Known position IDs for identity parsing (e.g. "ST", "CAM").
+const POSITION_ID_SET = new Set<string>(ROLE_ENTRIES.map((e) => e.positionId));
+
 const HIT_RADIUS = 22;
 const DEFAULT_ENTITY_RADIUS = 22;
 const BALL_RADIUS = 9;
@@ -77,7 +81,13 @@ function entityLabel(doc: GafferDocument, id: string): string {
   const e = doc.entities.find((e) => e.id === id);
   if (!e) return '?';
   if (e.kind === 'player') {
-    return e.display?.drillLabel ?? e.display?.positionSlot?.toString() ?? '?';
+    return (
+      e.display?.jerseyNumber?.toString() ??
+      e.display?.roleName ??
+      e.display?.drillLabel ??
+      e.display?.positionSlot?.toString() ??
+      '?'
+    );
   }
   return e.kind;
 }
@@ -201,10 +211,18 @@ export default function EditorPage() {
     selectedEntityId,
     selectedActionId,
     lastCreatedActionId,
+    lastCreatedEntityId,
+    placementTeam,
+    placementIsGk,
+    placementSize,
     setTool,
     setSelected,
     selectAction,
     setActionCurve,
+    setPlacementTeam,
+    setPlacementIsGk,
+    setPlacementSize,
+    updatePlayerDisplay,
     addPlayer,
     addBall,
     moveEntity,
@@ -235,6 +253,12 @@ export default function EditorPage() {
   const [docsLoading, setDocsLoading] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameStr, setRenameStr] = useState('');
+
+  // Identity overlay — shown above a player marker on placement or re-click.
+  const [identityOverlay, setIdentityOverlay] = useState<{ entityId: string; mode: 'input' | 'chip' } | null>(null);
+  const [inputValue, setInputValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const identityEscapedRef = useRef(false);
 
   const playingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
@@ -467,6 +491,37 @@ export default function EditorPage() {
     if (lastCreatedActionId) selectAction(lastCreatedActionId);
   }, [lastCreatedActionId, selectAction]);
 
+  // ── Identity overlay lifecycle ────────────────────────────────────────────
+
+  // Open identity input whenever a new player is placed.
+  useEffect(() => {
+    if (lastCreatedEntityId) {
+      setIdentityOverlay({ entityId: lastCreatedEntityId, mode: 'input' });
+      setInputValue('');
+    }
+  }, [lastCreatedEntityId]);
+
+  // Focus the input as soon as the overlay opens in input mode.
+  useEffect(() => {
+    if (identityOverlay?.mode === 'input') {
+      const id = setTimeout(() => inputRef.current?.focus(), 0);
+      return () => clearTimeout(id);
+    }
+  }, [identityOverlay]);
+
+  function commitIdentity(entityId: string, value: string) {
+    const val = value.trim();
+    if (val) {
+      if (/^\d{1,2}$/.test(val)) {
+        updatePlayerDisplay(entityId, { jerseyNumber: parseInt(val, 10) });
+      } else {
+        const upper = val.toUpperCase();
+        updatePlayerDisplay(entityId, { roleName: POSITION_ID_SET.has(upper) ? upper : val });
+      }
+    }
+    setIdentityOverlay(null);
+  }
+
   // ── Ghost drag line + gesture hint ────────────────────────────────────────
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -560,7 +615,15 @@ export default function EditorPage() {
         break;
 
       case 'player':
-        if (!hitId) addPlayer(x, y);
+        if (hitId) {
+          const hitEntity = doc.entities.find((e) => e.id === hitId);
+          if (hitEntity?.kind === 'player') {
+            setIdentityOverlay({ entityId: hitId, mode: 'chip' });
+          }
+        } else {
+          setIdentityOverlay(null);
+          addPlayer(x, y);
+        }
         break;
 
       case 'ball':
@@ -698,6 +761,15 @@ export default function EditorPage() {
     refreshDocs();
   }
 
+  // ── Identity overlay: resolve player position for anchor ──────────────────
+
+  const overlaySnapshot = identityOverlay
+    ? boardState.entities.find((e) => e.id === identityOverlay.entityId)
+    : null;
+  const overlayDocPlayer = identityOverlay && overlaySnapshot
+    ? doc.entities.find((e) => e.id === identityOverlay.entityId && e.kind === 'player')
+    : null;
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -749,42 +821,211 @@ export default function EditorPage() {
             <Trash2 size={16} />
           </button>
         )}
+
+        {/* Player toolkit — visible only in Player tool mode */}
+        {tool === 'player' && (
+          <>
+            <div className="w-6 border-t border-[#1e3a20] mt-1" />
+
+            {/* Team colour swatches */}
+            {(['A', 'B', 'neutral'] as const).map((team) => (
+              <button
+                key={team}
+                title={team === 'A' ? 'Team A (yellow)' : team === 'B' ? 'Team B (blue)' : 'Neutral (grey)'}
+                onClick={() => setPlacementTeam(team)}
+                style={{
+                  width: 28, height: 28,
+                  borderRadius: '50%',
+                  background: team === 'A' ? '#FFD700' : team === 'B' ? '#3B82F6' : '#9CA3AF',
+                  border: placementTeam === team ? '2px solid white' : '2px solid transparent',
+                  outline: placementTeam === team ? '2px solid #22c55e' : 'none',
+                  outlineOffset: 1,
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              />
+            ))}
+
+            {/* GK one-shot toggle */}
+            <button
+              title="Next player placed is GK"
+              onClick={() => setPlacementIsGk(!placementIsGk)}
+              className={[
+                'w-7 h-7 rounded flex items-center justify-center text-[10px] font-bold cursor-pointer transition-colors',
+                placementIsGk
+                  ? 'bg-[#22c55e] text-black'
+                  : 'text-[#4a7a4e] border border-[#2d5a30] hover:border-[#86efac] hover:text-[#86efac]',
+              ].join(' ')}
+            >
+              GK
+            </button>
+
+            {/* Size stepper */}
+            {(['small', 'medium', 'large'] as const).map((size) => (
+              <button
+                key={size}
+                title={`Player size: ${size} (r=${size === 'small' ? 16 : size === 'medium' ? 22 : 28})`}
+                onClick={() => setPlacementSize(size)}
+                className={[
+                  'w-7 h-7 rounded flex items-center justify-center text-[10px] cursor-pointer transition-colors',
+                  placementSize === size
+                    ? 'bg-[#1a3320] text-[#86efac] border border-[#22c55e]'
+                    : 'text-[#4a7a4e] border border-[#1e3a20] hover:border-[#2d5a30]',
+                ].join(' ')}
+              >
+                {size === 'small' ? 'S' : size === 'medium' ? 'M' : 'L'}
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {/* ── Center: board + controls ───────────────────────────────────────── */}
       <div className="flex flex-col flex-1 items-center justify-start overflow-auto py-5 px-6 gap-2">
-        {/* Board */}
-        <BoardRenderer
-          boardState={boardState}
-          stage={doc.stage}
-          onBoardPointerDown={handleBoardClick}
-          selectedEntityId={selectedEntityId}
-          ballOwnerEntityId={ownerAtT}
-          onEntityDragEnd={playing ? undefined : handleEntityDragEnd}
-          onEntityDragStart={playing ? undefined : handleEntityDragStart}
-          ballEntityId={ballEntityId}
-          actionOverlays={actionOverlays}
-          ghostLine={ghostLine}
-          ballHidden={ballHidden}
-          onBoardPointerMove={(x, y) => setCursorPos({ x, y })}
-          showBall={!!ballEntityId}
-          // Overlays and apex dot are only interactive in Select mode.
-          // In Author mode (and all other modes) they are non-interactive so they
-          // cannot intercept authoring drag gestures.
-          onOverlayClick={tool === 'select' ? (id) => {
-            setSelected(null); // clicking an overlay clears entity selection
-            selectAction(id === selectedActionId ? null : id);
-          } : undefined}
-          apexDot={tool === 'select' && apexDotPosition ? {
-            x: apexDotPosition.x,
-            y: apexDotPosition.y,
-            onDragMove: (x, y) => setDraggingApex({ x, y }),
-            onDragEnd: (x, y) => {
-              setDraggingApex(null);
-              if (selectedActionId) setActionCurve(selectedActionId, x, y);
-            },
-          } : null}
-        />
+        {/* Board + identity overlay */}
+        <div style={{ position: 'relative', display: 'inline-block', verticalAlign: 'top' }}>
+          <BoardRenderer
+            boardState={boardState}
+            stage={doc.stage}
+            onBoardPointerDown={handleBoardClick}
+            selectedEntityId={selectedEntityId}
+            ballOwnerEntityId={ownerAtT}
+            onEntityDragEnd={playing ? undefined : handleEntityDragEnd}
+            onEntityDragStart={playing ? undefined : handleEntityDragStart}
+            ballEntityId={ballEntityId}
+            actionOverlays={actionOverlays}
+            ghostLine={ghostLine}
+            ballHidden={ballHidden}
+            onBoardPointerMove={(x, y) => setCursorPos({ x, y })}
+            showBall={!!ballEntityId}
+            // Overlays and apex dot are only interactive in Select mode.
+            // In Author mode (and all other modes) they are non-interactive so they
+            // cannot intercept authoring drag gestures.
+            onOverlayClick={tool === 'select' ? (id) => {
+              setSelected(null); // clicking an overlay clears entity selection
+              selectAction(id === selectedActionId ? null : id);
+            } : undefined}
+            apexDot={tool === 'select' && apexDotPosition ? {
+              x: apexDotPosition.x,
+              y: apexDotPosition.y,
+              onDragMove: (x, y) => setDraggingApex({ x, y }),
+              onDragEnd: (x, y) => {
+                setDraggingApex(null);
+                if (selectedActionId) setActionCurve(selectedActionId, x, y);
+              },
+            } : null}
+          />
+
+          {/* Identity overlay — anchored to the player marker */}
+          {identityOverlay && overlaySnapshot && (
+            <div
+              style={{
+                position: 'absolute',
+                left: Math.round(overlaySnapshot.x),
+                top: Math.round(overlaySnapshot.y - (overlaySnapshot.radius ?? 22) - 8),
+                transform: 'translate(-50%, -100%)',
+                zIndex: 10,
+                pointerEvents: 'auto',
+              }}
+            >
+              {identityOverlay.mode === 'input' ? (
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <input
+                    ref={inputRef}
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    placeholder="9 · CAM · name"
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === 'Enter') {
+                        commitIdentity(identityOverlay.entityId, inputValue);
+                      }
+                      if (e.key === 'Escape') {
+                        identityEscapedRef.current = true;
+                        setIdentityOverlay(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (!identityEscapedRef.current) {
+                        commitIdentity(identityOverlay.entityId, inputValue);
+                      }
+                      identityEscapedRef.current = false;
+                    }}
+                    style={{
+                      width: 120,
+                      background: '#0f1f10',
+                      border: '1px solid #22c55e',
+                      borderRadius: 4,
+                      padding: '3px 6px',
+                      color: '#86efac',
+                      fontSize: 11,
+                      fontFamily: 'ui-monospace, monospace',
+                      outline: 'none',
+                      textAlign: 'center',
+                    }}
+                  />
+                  <button
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { identityEscapedRef.current = true; setIdentityOverlay(null); }}
+                    style={{ color: '#4a7a4e', fontSize: 12, cursor: 'pointer', background: 'none', border: 'none', padding: '0 2px', lineHeight: 1 }}
+                    title="Dismiss"
+                  >✕</button>
+                </div>
+              ) : (
+                // Chip editor — existing identity fields + add/close buttons
+                <div
+                  style={{
+                    background: '#0d1a0f',
+                    border: '1px solid #2d5a30',
+                    borderRadius: 6,
+                    padding: '4px 6px',
+                    display: 'flex',
+                    gap: 4,
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    maxWidth: 220,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+                  }}
+                >
+                  {overlayDocPlayer?.kind === 'player' && overlayDocPlayer.display?.jerseyNumber != null && (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 2, background: '#1a3320', borderRadius: 3, padding: '1px 5px', fontSize: 11, color: '#86efac', fontFamily: 'ui-monospace, monospace' }}>
+                      #{overlayDocPlayer.display.jerseyNumber}
+                      <button
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => updatePlayerDisplay(identityOverlay.entityId, { jerseyNumber: null })}
+                        style={{ color: '#4a7a4e', fontSize: 10, cursor: 'pointer', background: 'none', border: 'none', padding: '0 0 0 2px', lineHeight: 1 }}
+                        title="Remove jersey number"
+                      >×</button>
+                    </span>
+                  )}
+                  {overlayDocPlayer?.kind === 'player' && overlayDocPlayer.display?.roleName != null && (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 2, background: '#1a3320', borderRadius: 3, padding: '1px 5px', fontSize: 11, color: '#86efac', fontFamily: 'ui-monospace, monospace' }}>
+                      {overlayDocPlayer.display.roleName}
+                      <button
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => updatePlayerDisplay(identityOverlay.entityId, { roleName: null })}
+                        style={{ color: '#4a7a4e', fontSize: 10, cursor: 'pointer', background: 'none', border: 'none', padding: '0 0 0 2px', lineHeight: 1 }}
+                        title="Remove role"
+                      >×</button>
+                    </span>
+                  )}
+                  <button
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setInputValue(''); setIdentityOverlay({ entityId: identityOverlay.entityId, mode: 'input' }); }}
+                    style={{ color: '#4a7a4e', fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', padding: '0 2px', lineHeight: 1 }}
+                    title="Add field"
+                  >+</button>
+                  <button
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => setIdentityOverlay(null)}
+                    style={{ color: '#4a7a4e', fontSize: 11, cursor: 'pointer', background: 'none', border: 'none', padding: '0 2px', lineHeight: 1 }}
+                    title="Close"
+                  >✕</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* ── Live state readout strip ──────────────────────────────────────── */}
         <div

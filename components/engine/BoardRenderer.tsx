@@ -179,8 +179,13 @@ function PlayerMarker({ e, draggable, isSelected, isPending, isOwner, onDragEnd,
   const fill = teamFill(e.team, e.color);
   const stroke = teamStroke(e.team);
   const tc = contrastText(fill);
-  // Prefer drillLabel (editor-assigned) over positionSlot (pre-built docs).
-  const label = e.display?.drillLabel ?? e.display?.positionSlot?.toString() ?? '';
+  // Prefer committed identity (jersey number / role name) over auto drillLabel.
+  const label =
+    e.display?.jerseyNumber?.toString() ??
+    e.display?.roleName ??
+    e.display?.drillLabel ??
+    e.display?.positionSlot?.toString() ??
+    '';
   const fs = label.length >= 2 ? Math.round(r * 0.75) : Math.round(r * 0.9);
 
   return (

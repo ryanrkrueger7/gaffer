@@ -12,7 +12,7 @@ import {
   makeBeat,
 } from './factory';
 import { resolveOwnerAtT, resolvePosition } from './resolve';
-import type { GafferDocument } from './types';
+import type { GafferDocument, PlayerEntity } from './types';
 
 export type Tool = 'select' | 'player' | 'ball' | 'author';
 
@@ -136,6 +136,14 @@ export interface EditorStore {
   lastCreatedActionId: string | null;
   /** History depth at the point the last action was created — used to detect intervening mutations. */
   lastCreatedUndoDepth: number;
+  /** Id of the entity most recently placed via addPlayer — cleared by undo / loadDocument. */
+  lastCreatedEntityId: string | null;
+  /** Team colour applied to the next placed player. */
+  placementTeam: 'A' | 'B' | 'neutral';
+  /** When true, next placed player gets roleName = 'GK' and this resets to false. */
+  placementIsGk: boolean;
+  /** Radius class for the next placed player. */
+  placementSize: 'small' | 'medium' | 'large';
 
   setTool: (tool: Tool) => void;
   setSelected: (id: string | null) => void;
@@ -161,6 +169,11 @@ export interface EditorStore {
   selectAction: (id: string | null) => void;
   /** Set the bezier curve for an action by specifying an apex point (or null to straighten). */
   setActionCurve: (actionId: string, apexX: number | null, apexY: number | null) => void;
+  setPlacementTeam: (team: 'A' | 'B' | 'neutral') => void;
+  setPlacementIsGk: (v: boolean) => void;
+  setPlacementSize: (size: 'small' | 'medium' | 'large') => void;
+  /** Update display fields on a player entity. Does not push to undo history. */
+  updatePlayerDisplay: (id: string, patch: Partial<NonNullable<PlayerEntity['display']>>) => void;
   /** Update doc.meta.name on the live document (mirror of a DB rename). */
   renameDocument: (name: string) => void;
   /** Replace the current document entirely (e.g. loading from persistence). Resets all transient state. */
@@ -177,18 +190,44 @@ export const useEditorStore = create<EditorStore>((set) => ({
   selectedActionId: null,
   lastCreatedActionId: null,
   lastCreatedUndoDepth: 0,
+  lastCreatedEntityId: null,
+  placementTeam: 'A',
+  placementIsGk: false,
+  placementSize: 'medium',
 
   setTool: (tool) => set({ tool, pendingSourceId: null }),
   setSelected: (id) => set({ selectedEntityId: id }),
   setPendingSource: (id) => set({ pendingSourceId: id }),
+  setPlacementTeam: (team) => set({ placementTeam: team }),
+  setPlacementIsGk: (v) => set({ placementIsGk: v }),
+  setPlacementSize: (size) => set({ placementSize: size }),
+
+  updatePlayerDisplay: (id, patch) =>
+    set((state) => ({
+      document: {
+        ...state.document,
+        entities: state.document.entities.map((e) =>
+          e.id === id && e.kind === 'player'
+            ? { ...e, display: { ...e.display, ...patch } }
+            : e,
+        ),
+      },
+    })),
 
   addPlayer: (x, y) =>
     set((state) => {
       const count = state.document.entities.filter((e) => e.kind === 'player').length;
+      const radiusMap = { small: 16, medium: 22, large: 28 } as const;
+      const colorMap = { A: '#FFD700', B: '#3B82F6', neutral: '#9CA3AF' } as const;
       const player = makePlayer({
-        team: 'A',
+        team: state.placementTeam,
+        radius: radiusMap[state.placementSize],
+        color: colorMap[state.placementTeam],
         initial: { x, y },
-        display: { drillLabel: String(count + 1) },
+        display: {
+          drillLabel: String(count + 1),
+          ...(state.placementIsGk ? { roleName: 'GK' } : {}),
+        },
       });
       return {
         document: {
@@ -197,6 +236,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
         },
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
+        lastCreatedEntityId: player.id,
+        placementIsGk: false,
       };
     }),
 
@@ -380,6 +421,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
         selectedActionId: null,
         lastCreatedActionId: null,
         lastCreatedUndoDepth: 0,
+        lastCreatedEntityId: null,
       };
     }),
 
@@ -404,6 +446,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       selectedActionId: null,
       lastCreatedActionId: null,
       lastCreatedUndoDepth: 0,
+      lastCreatedEntityId: null,
     }),
 
   setActionCurve: (actionId, apexX, apexY) =>
