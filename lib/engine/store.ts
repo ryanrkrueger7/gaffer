@@ -218,6 +218,10 @@ export const useEditorStore = create<EditorStore>((set) => ({
     set((state) => {
       const count = state.document.entities.filter((e) => e.kind === 'player').length;
       const radiusMap = { small: 16, medium: 22, large: 28 } as const;
+      // EntityBase uses `team` (not `teamId`) for logical team membership.
+      // `color` is an explicit display hint derived from `team`; BoardRenderer also
+      // derives color from `team` alone when `color` is absent, so storing it here
+      // just makes the document self-contained and survives theme changes.
       const colorMap = { A: '#FFD700', B: '#3B82F6', neutral: '#9CA3AF' } as const;
       const player = makePlayer({
         team: state.placementTeam,
@@ -226,7 +230,9 @@ export const useEditorStore = create<EditorStore>((set) => ({
         initial: { x, y },
         display: {
           drillLabel: String(count + 1),
-          ...(state.placementIsGk ? { roleName: 'GK' } : {}),
+          // GK toggle writes to inferredPositionId, not roleName — non-destructive:
+          // it never overwrites a coaching label the user set in the identity input.
+          ...(state.placementIsGk ? { inferredPositionId: 'GK' } : {}),
         },
       });
       return {

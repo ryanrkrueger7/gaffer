@@ -179,10 +179,11 @@ function PlayerMarker({ e, draggable, isSelected, isPending, isOwner, onDragEnd,
   const fill = teamFill(e.team, e.color);
   const stroke = teamStroke(e.team);
   const tc = contrastText(fill);
-  // Prefer committed identity (jersey number / role name) over auto drillLabel.
+  // Label priority: jersey# → coaching role → position ID (GK/ST/CAM…) → drill label → slot.
   const label =
     e.display?.jerseyNumber?.toString() ??
     e.display?.roleName ??
+    e.display?.inferredPositionId ??
     e.display?.drillLabel ??
     e.display?.positionSlot?.toString() ??
     '';
