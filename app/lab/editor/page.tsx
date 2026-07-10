@@ -24,6 +24,10 @@ import {
   Save,
   FolderOpen,
   Pencil,
+  Cone,
+  Frame,
+  Goal as GoalIcon,
+  PersonStanding,
 } from 'lucide-react';
 import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
@@ -110,6 +114,10 @@ const TOOL_DEFS: { id: Tool; icon: React.ReactNode; title: string }[] = [
   { id: 'select', icon: <MousePointer2 size={16} />, title: 'Select / Move — drag to reposition; Del to delete' },
   { id: 'player', icon: <UserPlus size={16} />, title: 'Place Player — click empty pitch' },
   { id: 'ball', icon: <Circle size={16} />, title: 'Place Ball — click a player to give them possession' },
+  { id: 'cone', icon: <Cone size={16} />, title: 'Place Cone' },
+  { id: 'minigoal', icon: <Frame size={16} />, title: 'Place Mini-Goal' },
+  { id: 'goal', icon: <GoalIcon size={16} />, title: 'Place Full-Size Goal' },
+  { id: 'mannequin', icon: <PersonStanding size={16} />, title: 'Place Mannequin' },
   { id: 'author', icon: <Hand size={16} />, title: 'Author — drag ball/owner → pass or carry; drag other player → run' },
 ];
 
@@ -237,6 +245,10 @@ export default function EditorPage() {
     updatePlayerDisplay,
     addPlayer,
     addBall,
+    addCone,
+    addMinigoal,
+    addMannequin,
+    addGoal,
     moveEntity,
     addPass,
     addRun,
@@ -672,6 +684,22 @@ export default function EditorPage() {
           addBall(x, y);
         }
         break;
+
+      case 'cone':
+        addCone(x, y);
+        break;
+
+      case 'minigoal':
+        addMinigoal(x, y);
+        break;
+
+      case 'goal':
+        addGoal(x, y);
+        break;
+
+      case 'mannequin':
+        addMannequin(x, y);
+        break;
     }
   }
 
@@ -750,6 +778,10 @@ export default function EditorPage() {
     tool === 'select' ? 'drag to reposition, Del to delete'
     : tool === 'player' ? 'click pitch to place'
     : tool === 'ball' ? 'click a player to place ball'
+    : tool === 'cone' ? 'click pitch to place cone'
+    : tool === 'minigoal' ? 'click pitch to place mini-goal'
+    : tool === 'goal' ? 'click pitch to place goal'
+    : tool === 'mannequin' ? 'click pitch to place mannequin'
     : tool === 'author'
       ? (endOwner
           ? `drag ball/owner → pass or carry  |  drag player → run  (next from: ${endOwnerLabel})`

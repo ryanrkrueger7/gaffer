@@ -4,6 +4,9 @@ import type {
   PlayerEntity,
   BallEntity,
   ConeEntity,
+  MinigoalEntity,
+  MannequinEntity,
+  GoalEntity,
   PassAction,
   PassTarget,
   PassType,
@@ -77,6 +80,45 @@ export function makeCone(
 ): ConeEntity {
   return {
     kind: 'cone',
+    id: makeId(),
+    initial: opts.initial ?? { x: 0, y: 0 },
+    team: opts.team,
+    color: opts.color,
+    radius: opts.radius,
+  };
+}
+
+export function makeMinigoal(
+  opts: Partial<Omit<MinigoalEntity, 'id' | 'kind'>> = {}
+): MinigoalEntity {
+  return {
+    kind: 'minigoal',
+    id: makeId(),
+    initial: opts.initial ?? { x: 0, y: 0 },
+    team: opts.team,
+    color: opts.color,
+    radius: opts.radius,
+  };
+}
+
+export function makeMannequin(
+  opts: Partial<Omit<MannequinEntity, 'id' | 'kind'>> = {}
+): MannequinEntity {
+  return {
+    kind: 'mannequin',
+    id: makeId(),
+    initial: opts.initial ?? { x: 0, y: 0 },
+    team: opts.team,
+    color: opts.color,
+    radius: opts.radius,
+  };
+}
+
+export function makeGoal(
+  opts: Partial<Omit<GoalEntity, 'id' | 'kind'>> = {}
+): GoalEntity {
+  return {
+    kind: 'goal',
     id: makeId(),
     initial: opts.initial ?? { x: 0, y: 0 },
     team: opts.team,

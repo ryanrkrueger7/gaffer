@@ -6,6 +6,10 @@ import {
   createEmptyDocument,
   makePlayer,
   makeBall,
+  makeCone,
+  makeMinigoal,
+  makeMannequin,
+  makeGoal,
   makePass,
   makeRun,
   makeCarry,
@@ -14,7 +18,7 @@ import {
 import { resolveOwnerAtT, resolvePosition } from './resolve';
 import type { GafferDocument, PlayerEntity } from './types';
 
-export type Tool = 'select' | 'player' | 'ball' | 'author';
+export type Tool = 'select' | 'player' | 'ball' | 'cone' | 'minigoal' | 'goal' | 'mannequin' | 'author';
 
 const DEFAULT_ENTITY_RADIUS = 22;
 const UNDO_LIMIT = 30;
@@ -154,6 +158,10 @@ export interface EditorStore {
    * to that player's center so resolveBallPosition can detect implicit ownership.
    */
   addBall: (x: number, y: number) => void;
+  addCone: (x: number, y: number) => void;
+  addMinigoal: (x: number, y: number) => void;
+  addMannequin: (x: number, y: number) => void;
+  addGoal: (x: number, y: number) => void;
   moveEntity: (id: string, x: number, y: number) => void;
   /** Passer = end-of-sequence owner. Relational timing: if target has a Run, aligns pass timing to it. No-op if no end-of-sequence owner. */
   addPass: (targetId: string) => void;
@@ -271,6 +279,46 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...state.document,
           entities: [...state.document.entities, ball],
         },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
+      };
+    }),
+
+  addCone: (x, y) =>
+    set((state) => {
+      const cone = makeCone({ initial: { x, y } });
+      return {
+        document: { ...state.document, entities: [...state.document.entities, cone] },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
+      };
+    }),
+
+  addMinigoal: (x, y) =>
+    set((state) => {
+      const minigoal = makeMinigoal({ initial: { x, y } });
+      return {
+        document: { ...state.document, entities: [...state.document.entities, minigoal] },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
+      };
+    }),
+
+  addMannequin: (x, y) =>
+    set((state) => {
+      const mannequin = makeMannequin({ initial: { x, y } });
+      return {
+        document: { ...state.document, entities: [...state.document.entities, mannequin] },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
+      };
+    }),
+
+  addGoal: (x, y) =>
+    set((state) => {
+      const goal = makeGoal({ initial: { x, y } });
+      return {
+        document: { ...state.document, entities: [...state.document.entities, goal] },
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
       };

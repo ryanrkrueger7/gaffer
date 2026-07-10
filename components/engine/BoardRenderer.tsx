@@ -276,6 +276,27 @@ function MannequinMarker({ e, draggable, isSelected, isPending, onDragEnd, onDra
   );
 }
 
+function GoalMarker({ e, draggable, isSelected, isPending, onDragEnd, onDragStart }: { e: EntitySnapshot } & MarkerDragProps) {
+  return (
+    <Group
+      x={e.x} y={e.y}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd ? (ev) => onDragEnd(ev.target.x(), ev.target.y()) : undefined}
+    >
+      {(isSelected || isPending) && <Rect x={-34} y={-22} width={68} height={44} stroke={isSelected ? '#22c55e' : '#f59e0b'} strokeWidth={2} fill="transparent" listening={false} />}
+      {/* Left post */}
+      <Rect x={-28} y={-16} width={5} height={32} fill="white" stroke="#aaaaaa" strokeWidth={1} />
+      {/* Right post */}
+      <Rect x={23} y={-16} width={5} height={32} fill="white" stroke="#aaaaaa" strokeWidth={1} />
+      {/* Crossbar */}
+      <Line points={[-23, -16, 23, -16]} stroke="white" strokeWidth={3} />
+      {/* Net outline (dashed) */}
+      <Rect x={-23} y={-16} width={46} height={32} stroke="rgba(255,255,255,0.25)" strokeWidth={1} dash={[3, 3]} fill="transparent" listening={false} />
+    </Group>
+  );
+}
+
 // ── BoardRenderer ─────────────────────────────────────────────────────────────
 
 export interface BoardRendererProps {
@@ -437,6 +458,9 @@ export default function BoardRenderer({
             );
             if (e.kind === 'mannequin') return (
               <MannequinMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
+            );
+            if (e.kind === 'goal') return (
+              <GoalMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
             );
             return null;
           })}
