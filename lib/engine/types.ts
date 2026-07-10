@@ -119,8 +119,12 @@ export interface RunAction extends ActionBase {
 export interface CarryAction extends ActionBase {
   kind: 'carry';
   path: Path;
-  /** Carry endpoint. When present, resolvePosition moves the carrier here (no concurrent Run needed). */
+  /** Carry endpoint as raw coordinates. When present, resolvePosition moves the carrier here. */
   destination?: { x: number; y: number };
+  /** Carry endpoint as an entity reference (goal, mini-goal, zone, etc.).
+   *  Resolved to a static point via resolveTargetPoint(); additive — does not
+   *  replace destination, coexists with it. Chat 3 wires this into the editor. */
+  destinationEntityId?: string;
 }
 
 export type MarkOffset = 'goal-side-tight' | 'zonal' | { dx: number; dy: number };

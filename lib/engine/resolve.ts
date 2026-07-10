@@ -319,3 +319,49 @@ export function resolveBoardState(doc: GafferDocument, t: number): BoardState {
 
   return { entities, ball, activeAnnotations };
 }
+
+// ── resolveTargetPoint ────────────────────────────────────────────────────────
+
+/**
+ * Resolves a static reference point for any entity kind, used when an action
+ * targets a non-moving entity (goal, mini-goal, zone, etc.) rather than a raw
+ * coordinate.
+ *
+ * - PlayerEntity, GoalEntity, MinigoalEntity, ConeEntity, MannequinEntity,
+ *   BallEntity: returns entity.initial — the static placement position.
+ *   NOTE: for players this is the initial position only, NOT their animated
+ *   position at time t. Use resolvePosition() when you need that.
+ * - ZoneEntity (rect): returns the centroid (midpoint of width/height).
+ * - ZoneEntity (polygon): returns the arithmetic centroid (average of vertices).
+ *   Only rect zones are currently drawable in the editor; polygon support is
+ *   included here for completeness and external document compatibility.
+ *
+ * Returns null if entityId is not found in doc.entities.
+ *
+ * This function is fully isolated from resolvePosition, resolveBallPosition,
+ * and resolvePossessionAtT. It reads only entity.initial / entity.region.
+ */
+export function resolveTargetPoint(
+  doc: GafferDocument,
+  entityId: string,
+): { x: number; y: number } | null {
+  const entity = doc.entities.find(e => e.id === entityId);
+  if (!entity) return null;
+
+  if (entity.kind === 'zone') {
+    const { region } = entity;
+    if (region.shape === 'rect') {
+      return { x: region.x + region.width / 2, y: region.y + region.height / 2 };
+    }
+    // Polygon: arithmetic centroid (average of vertices).
+    const { points } = region;
+    if (points.length === 0) return null;
+    return {
+      x: points.reduce((s, p) => s + p.x, 0) / points.length,
+      y: points.reduce((s, p) => s + p.y, 0) / points.length,
+    };
+  }
+
+  // All remaining kinds (player, ball, cone, minigoal, mannequin, goal) have initial.
+  return { x: entity.initial.x, y: entity.initial.y };
+}
