@@ -129,9 +129,16 @@ export function getActionChordEndpoints(
   }
   if (action.kind === 'pass') {
     const start = resolvePosition(doc, action.entityId, action.start);
-    const end = 'entityId' in action.target
-      ? resolvePosition(doc, action.target.entityId, action.start + action.duration)
-      : { x: action.target.x, y: action.target.y };
+    let end: { x: number; y: number };
+    if ('entityId' in action.target) {
+      const targetId = action.target.entityId;
+      const targetEntity = doc.entities.find(e => e.id === targetId);
+      end = targetEntity?.kind === 'player'
+        ? resolvePosition(doc, targetId, action.start + action.duration)
+        : (resolveTargetPoint(doc, targetId) ?? start);
+    } else {
+      end = { x: action.target.x, y: action.target.y };
+    }
     return { start, end };
   }
   return null;
