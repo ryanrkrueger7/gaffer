@@ -7,6 +7,8 @@ import type {
   MinigoalEntity,
   MannequinEntity,
   GoalEntity,
+  ZoneEntity,
+  Region,
   PassAction,
   PassTarget,
   PassType,
@@ -121,6 +123,19 @@ export function makeGoal(
     kind: 'goal',
     id: makeId(),
     initial: opts.initial ?? { x: 0, y: 0 },
+    team: opts.team,
+    color: opts.color,
+    radius: opts.radius,
+  };
+}
+
+export function makeZone(
+  opts: { region: Region } & Partial<Omit<ZoneEntity, 'id' | 'kind'>>
+): ZoneEntity {
+  return {
+    kind: 'zone',
+    id: makeId(),
+    region: opts.region,
     team: opts.team,
     color: opts.color,
     radius: opts.radius,

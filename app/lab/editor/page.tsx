@@ -28,6 +28,7 @@ import {
   Frame,
   Goal as GoalIcon,
   PersonStanding,
+  BoxSelect,
 } from 'lucide-react';
 import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
@@ -36,7 +37,7 @@ import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions
 import type { DocSummary } from '@/app/actions/documents';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
 import type { EntitySnapshot } from '@/lib/engine/resolve';
-import type { GafferDocument, Action, PlayerEntity } from '@/lib/engine/types';
+import type { GafferDocument, Action, PlayerEntity, ZoneEntity } from '@/lib/engine/types';
 import type { BoardRendererProps, ActionOverlay } from '@/components/engine/BoardRenderer';
 
 const BoardRenderer = dynamic<BoardRendererProps>(
@@ -118,6 +119,7 @@ const TOOL_DEFS: { id: Tool; icon: React.ReactNode; title: string }[] = [
   { id: 'minigoal', icon: <Frame size={16} />, title: 'Place Mini-Goal' },
   { id: 'goal', icon: <GoalIcon size={16} />, title: 'Place Full-Size Goal' },
   { id: 'mannequin', icon: <PersonStanding size={16} />, title: 'Place Mannequin' },
+  { id: 'zone', icon: <BoxSelect size={16} />, title: 'Draw Zone — click-drag to mark a region' },
   { id: 'author', icon: <Hand size={16} />, title: 'Author — drag ball/owner → pass or carry; drag other player → run' },
 ];
 
@@ -249,6 +251,7 @@ export default function EditorPage() {
     addMinigoal,
     addMannequin,
     addGoal,
+    addZone,
     moveEntity,
     addPass,
     addRun,
@@ -283,6 +286,9 @@ export default function EditorPage() {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const identityEscapedRef = useRef(false);
+
+  // Zone drawing — anchor set on mousedown, cleared on mouseup.
+  const [zoneAnchor, setZoneAnchor] = useState<{ x: number; y: number } | null>(null);
 
   // Inference confidence — maps entityId → confidence score from the last inferPosition() call.
   // Not persisted; purely transient UI state. Ghost labels are only shown when conf ≥ INFER_CONFIDENCE_THRESHOLD.
@@ -403,6 +409,12 @@ export default function EditorPage() {
   const boardState = useMemo(() => resolveBoardState(doc, t), [doc, t]);
   const ballEntityId = useMemo(
     () => doc.entities.find((e) => e.kind === 'ball')?.id,
+    [doc.entities],
+  );
+
+  // Zone entities — passed directly to BoardRenderer (not in boardState.entities).
+  const zones = useMemo(
+    () => doc.entities.filter((e): e is ZoneEntity => e.kind === 'zone'),
     [doc.entities],
   );
 
@@ -580,6 +592,17 @@ export default function EditorPage() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
 
+  // Zone preview rect during drag-draw — depends on cursorPos so declared here.
+  const zonePreview = useMemo(() => {
+    if (!zoneAnchor || !cursorPos) return null;
+    return {
+      x: Math.min(zoneAnchor.x, cursorPos.x),
+      y: Math.min(zoneAnchor.y, cursorPos.y),
+      width: Math.abs(cursorPos.x - zoneAnchor.x),
+      height: Math.abs(cursorPos.y - zoneAnchor.y),
+    };
+  }, [zoneAnchor, cursorPos]);
+
   // Live hint text during an Author-mode drag: updated as cursor moves.
   const gestureHint = useMemo((): string | null => {
     if (tool !== 'author' || !draggingId || !cursorPos) return null;
@@ -700,7 +723,35 @@ export default function EditorPage() {
       case 'mannequin':
         addMannequin(x, y);
         break;
+
+      case 'zone':
+        // Zone placement uses mousedown/mouseup, not click — no-op here.
+        break;
     }
+  }
+
+  // ── Zone draw handlers ────────────────────────────────────────────────────
+
+  function handleBoardMouseDown(x: number, y: number) {
+    if (tool === 'zone' && !playing) {
+      setZoneAnchor({ x, y });
+    }
+  }
+
+  function handleBoardMouseUp(x: number, y: number) {
+    if (tool !== 'zone' || !zoneAnchor || playing) { setZoneAnchor(null); return; }
+    const w = Math.abs(x - zoneAnchor.x);
+    const h = Math.abs(y - zoneAnchor.y);
+    if (w >= 10 && h >= 10) {
+      addZone({
+        shape: 'rect',
+        x: Math.min(x, zoneAnchor.x),
+        y: Math.min(y, zoneAnchor.y),
+        width: w,
+        height: h,
+      });
+    }
+    setZoneAnchor(null);
   }
 
   // ── Drag handlers ─────────────────────────────────────────────────────────
@@ -782,6 +833,7 @@ export default function EditorPage() {
     : tool === 'minigoal' ? 'click pitch to place mini-goal'
     : tool === 'goal' ? 'click pitch to place goal'
     : tool === 'mannequin' ? 'click pitch to place mannequin'
+    : tool === 'zone' ? 'drag to draw a zone region'
     : tool === 'author'
       ? (endOwner
           ? `drag ball/owner → pass or carry  |  drag player → run  (next from: ${endOwnerLabel})`
@@ -996,6 +1048,11 @@ export default function EditorPage() {
                 if (selectedActionId) setActionCurve(selectedActionId, x, y);
               },
             } : null}
+            zones={zones}
+            zonePreview={tool === 'zone' ? zonePreview : null}
+            onBoardMouseDown={handleBoardMouseDown}
+            onBoardMouseUp={handleBoardMouseUp}
+            onZoneClick={tool === 'select' ? (id) => { setSelected(id); selectAction(null); } : undefined}
           />
 
           {/* Ghost position suggestion overlays — faint/dashed, shown only when:

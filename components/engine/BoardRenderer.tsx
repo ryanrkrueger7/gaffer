@@ -4,7 +4,7 @@
 // Takes a resolved BoardState (output of resolveBoardState) and draws it via react-konva.
 
 import { Stage as KonvaStage, Layer, Rect, Circle, Line, Arrow, Group, Text } from 'react-konva';
-import type { Stage as StageConfig } from '@/lib/engine/types';
+import type { Stage as StageConfig, ZoneEntity } from '@/lib/engine/types';
 import type { BoardState, EntitySnapshot } from '@/lib/engine/resolve';
 
 const CW = 800;
@@ -330,6 +330,16 @@ export interface BoardRendererProps {
   onOverlayClick?: (actionId: string) => void;
   /** Draggable apex dot for the currently selected action's bezier curve. */
   apexDot?: { x: number; y: number; onDragMove: (x: number, y: number) => void; onDragEnd: (x: number, y: number) => void } | null;
+  /** Zone entities — rendered behind all other entities. */
+  zones?: ZoneEntity[];
+  /** Live preview rect while the user is drag-drawing a zone. */
+  zonePreview?: { x: number; y: number; width: number; height: number } | null;
+  /** Called on canvas mousedown — used by zone drawing tool. */
+  onBoardMouseDown?: (x: number, y: number) => void;
+  /** Called on canvas mouseup — used by zone drawing tool. */
+  onBoardMouseUp?: (x: number, y: number) => void;
+  /** Called when a zone entity is clicked — page uses this for selection. */
+  onZoneClick?: (id: string) => void;
 }
 
 export default function BoardRenderer({
@@ -349,6 +359,11 @@ export default function BoardRenderer({
   showBall = true,
   onOverlayClick,
   apexDot,
+  zones,
+  zonePreview,
+  onBoardMouseDown,
+  onBoardMouseUp,
+  onZoneClick,
 }: BoardRendererProps) {
   const { entities, ball, activeAnnotations } = boardState;
   const isDraggable = !!onEntityDragEnd;
@@ -365,6 +380,14 @@ export default function BoardRenderer({
           const pos = e.target.getStage()?.getPointerPosition();
           if (pos) onBoardPointerMove(pos.x, pos.y);
         } : undefined}
+        onMouseDown={onBoardMouseDown ? (e) => {
+          const pos = e.target.getStage()?.getPointerPosition();
+          if (pos) onBoardMouseDown(pos.x, pos.y);
+        } : undefined}
+        onMouseUp={onBoardMouseUp ? (e) => {
+          const pos = e.target.getStage()?.getPointerPosition();
+          if (pos) onBoardMouseUp(pos.x, pos.y);
+        } : undefined}
       >
         <Layer>
           {/* Field */}
@@ -374,6 +397,42 @@ export default function BoardRenderer({
             <PitchFull />
           ) : (
             <PitchBlank />
+          )}
+
+          {/* ── Zones — rendered behind everything else ── */}
+          {zones?.map(zone => {
+            if (zone.region.shape !== 'rect') return null; // polygon rendering not yet implemented
+            const { x, y, width, height } = zone.region;
+            const isSel = selectedEntityId === zone.id;
+            return (
+              <Group key={zone.id}>
+                {isSel && (
+                  <Rect x={x - 3} y={y - 3} width={width + 6} height={height + 6}
+                    stroke="#22c55e" strokeWidth={2} fill="transparent" listening={false} />
+                )}
+                <Rect
+                  x={x} y={y} width={width} height={height}
+                  fill="rgba(59,130,246,0.12)"
+                  stroke="rgba(99,163,255,0.5)"
+                  strokeWidth={1.5}
+                  listening={!!onZoneClick}
+                  onClick={onZoneClick ? (e) => { e.cancelBubble = true; onZoneClick(zone.id); } : undefined}
+                />
+              </Group>
+            );
+          })}
+
+          {/* Zone preview — dashed rect shown while drag-drawing */}
+          {zonePreview && zonePreview.width >= 6 && zonePreview.height >= 6 && (
+            <Rect
+              x={zonePreview.x} y={zonePreview.y}
+              width={zonePreview.width} height={zonePreview.height}
+              fill="rgba(59,130,246,0.06)"
+              stroke="rgba(99,163,255,0.65)"
+              strokeWidth={1.5}
+              dash={[6, 4]}
+              listening={false}
+            />
           )}
 
           {/* ── Diagnostic: authored action path overlays (behind entities) ── */}

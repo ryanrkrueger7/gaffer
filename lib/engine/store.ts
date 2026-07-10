@@ -10,15 +10,16 @@ import {
   makeMinigoal,
   makeMannequin,
   makeGoal,
+  makeZone,
   makePass,
   makeRun,
   makeCarry,
   makeBeat,
 } from './factory';
 import { resolveOwnerAtT, resolvePosition } from './resolve';
-import type { GafferDocument, PlayerEntity } from './types';
+import type { GafferDocument, PlayerEntity, Region } from './types';
 
-export type Tool = 'select' | 'player' | 'ball' | 'cone' | 'minigoal' | 'goal' | 'mannequin' | 'author';
+export type Tool = 'select' | 'player' | 'ball' | 'cone' | 'minigoal' | 'goal' | 'mannequin' | 'zone' | 'author';
 
 const DEFAULT_ENTITY_RADIUS = 22;
 const UNDO_LIMIT = 30;
@@ -162,6 +163,7 @@ export interface EditorStore {
   addMinigoal: (x: number, y: number) => void;
   addMannequin: (x: number, y: number) => void;
   addGoal: (x: number, y: number) => void;
+  addZone: (region: Region) => void;
   moveEntity: (id: string, x: number, y: number) => void;
   /** Passer = end-of-sequence owner. Relational timing: if target has a Run, aligns pass timing to it. No-op if no end-of-sequence owner. */
   addPass: (targetId: string) => void;
@@ -319,6 +321,16 @@ export const useEditorStore = create<EditorStore>((set) => ({
       const goal = makeGoal({ initial: { x, y } });
       return {
         document: { ...state.document, entities: [...state.document.entities, goal] },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
+      };
+    }),
+
+  addZone: (region) =>
+    set((state) => {
+      const zone = makeZone({ region });
+      return {
+        document: { ...state.document, entities: [...state.document.entities, zone] },
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
       };
