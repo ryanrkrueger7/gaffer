@@ -27,8 +27,7 @@ import {
 } from 'lucide-react';
 import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
 import type { Tool } from '@/lib/engine/store';
-import { ROLE_ENTRIES } from '@/lib/knowledge';
-import { inferPosition, INFER_CONFIDENCE_THRESHOLD } from '@/lib/knowledge/positionInference';
+import { ROLE_ENTRIES, inferPosition, INFER_CONFIDENCE_THRESHOLD } from '@/lib/knowledge';
 import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions/documents';
 import type { DocSummary } from '@/app/actions/documents';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
