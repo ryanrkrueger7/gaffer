@@ -725,7 +725,10 @@ export default function EditorPage() {
         break;
 
       case 'zone':
-        // Zone placement uses mousedown/mouseup, not click — no-op here.
+        // Intentional no-op: Konva fires mousedown -> mouseup -> click on zone
+        // drag-draw completion. Zone creation is fully handled in
+        // handleBoardMouseUp; this case exists only to absorb the trailing
+        // click event. Do not remove.
         break;
     }
   }
