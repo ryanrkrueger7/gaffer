@@ -132,6 +132,10 @@ export function resolvePosition(
       movements.push({ start: a.start, duration: a.duration, destination: a.destination, path: a.path });
     } else if (a.kind === 'carry' && a.destination != null) {
       movements.push({ start: a.start, duration: a.duration, destination: a.destination, path: a.path });
+    } else if (a.kind === 'carry' && a.destinationEntityId != null) {
+      // Entity-targeted carry: resolve destination at playback time, not baked at creation.
+      const dest = resolveTargetPoint(doc, a.destinationEntityId);
+      if (dest) movements.push({ start: a.start, duration: a.duration, destination: dest, path: a.path });
     }
   }
   movements.sort((a, b) => a.start - b.start);
@@ -218,9 +222,21 @@ export function resolvePossessionAtT(doc: GafferDocument, t: number): Possession
       const fromPos = ballPerimeter(doc, action.entityId, passerCenter);
 
       let toPos: { x: number; y: number };
+      // Track player receiver separately to avoid re-narrowing the union target after toPos block.
+      let passToPlayerId: string | null = null;
+
       if ('entityId' in action.target) {
-        const receiverCenter = resolvePosition(doc, action.target.entityId, end);
-        toPos = ballPerimeter(doc, action.target.entityId, receiverCenter);
+        const targetId = action.target.entityId;
+        const targetEntity = doc.entities.find(e => e.id === targetId);
+        if (targetEntity?.kind === 'player') {
+          // Player receiver: ball arrives at perimeter of their (possibly moving) position.
+          const receiverCenter = resolvePosition(doc, targetId, end);
+          toPos = ballPerimeter(doc, targetId, receiverCenter);
+          passToPlayerId = targetId;
+        } else {
+          // Non-player target (goal, mini-goal, zone): ball arrives at static reference point.
+          toPos = resolveTargetPoint(doc, targetId) ?? lastLoosePos;
+        }
       } else {
         toPos = { x: action.target.x, y: action.target.y };
       }
@@ -232,9 +248,10 @@ export function resolvePossessionAtT(doc: GafferDocument, t: number): Possession
       }
 
       // Pass complete.
-      if ('entityId' in action.target) {
-        currentOwner = action.target.entityId;
+      if (passToPlayerId !== null) {
+        currentOwner = passToPlayerId;
       } else {
+        // Ground pass (raw coords) or non-player entity target → ball becomes loose.
         currentOwner = null;
         lastLoosePos = toPos;
       }

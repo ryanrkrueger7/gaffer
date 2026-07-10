@@ -191,6 +191,7 @@ export function makeCarry(opts: {
   start?: number;
   duration?: number;
   destination?: { x: number; y: number };
+  destinationEntityId?: string;
 }): CarryAction {
   const carry: CarryAction = {
     kind: 'carry',
@@ -202,6 +203,7 @@ export function makeCarry(opts: {
     duration: opts.duration ?? 1.0,
   };
   if (opts.destination != null) carry.destination = opts.destination;
+  if (opts.destinationEntityId != null) carry.destinationEntityId = opts.destinationEntityId;
   return carry;
 }
 

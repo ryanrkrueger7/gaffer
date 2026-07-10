@@ -16,7 +16,7 @@ import {
   makeCarry,
   makeBeat,
 } from './factory';
-import { resolveOwnerAtT, resolvePosition } from './resolve';
+import { resolveOwnerAtT, resolvePosition, resolveTargetPoint } from './resolve';
 import type { GafferDocument, PlayerEntity, Region } from './types';
 
 export type Tool = 'select' | 'player' | 'ball' | 'cone' | 'minigoal' | 'goal' | 'mannequin' | 'zone' | 'author';
@@ -52,7 +52,10 @@ export function computeCurrentOwner(doc: GafferDocument): string | null {
         owner = action.entityId;
       } else {
         if ('entityId' in action.target) {
-          owner = action.target.entityId;
+          const targetId = action.target.entityId;
+          const targetEntity = doc.entities.find(e => e.id === targetId);
+          // Only players can own the ball; non-player targets (goal, zone, etc.) → loose.
+          owner = targetEntity?.kind === 'player' ? targetId : null;
         } else {
           owner = null;
         }
@@ -108,11 +111,21 @@ export function getActionChordEndpoints(
     };
   }
   if (action.kind === 'carry') {
-    if (!action.destination) return null;
-    return {
-      start: resolvePosition(doc, action.entityId, action.start),
-      end: action.destination,
-    };
+    if (action.destination) {
+      return {
+        start: resolvePosition(doc, action.entityId, action.start),
+        end: action.destination,
+      };
+    }
+    if (action.destinationEntityId) {
+      const dest = resolveTargetPoint(doc, action.destinationEntityId);
+      if (!dest) return null;
+      return {
+        start: resolvePosition(doc, action.entityId, action.start),
+        end: dest,
+      };
+    }
+    return null;
   }
   if (action.kind === 'pass') {
     const start = resolvePosition(doc, action.entityId, action.start);
@@ -171,6 +184,8 @@ export interface EditorStore {
   addRun: (playerId: string, x: number, y: number, startT: number) => void;
   /** Carrier = end-of-sequence owner; appends to sequence. No-op if no end-of-sequence owner. */
   addCarry: (x: number, y: number) => void;
+  /** Carry targeting a static entity (goal, mini-goal, zone). Carrier = end-of-sequence owner. */
+  addCarryToEntity: (targetEntityId: string) => void;
   updateAction: (id: string, patch: { start?: number; duration?: number }) => void;
   deleteAction: (id: string) => void;
   /** Remove entity + any actions that reference it. Deleting the ball also removes all carry/pass actions. */
@@ -413,6 +428,32 @@ export const useEditorStore = create<EditorStore>((set) => ({
         entityId: ownerId,
         beatId: DEFAULT_BEAT_ID,
         destination: { x, y },
+        start: startT,
+        duration: 1.0,
+      });
+      const newHistory = pushHistory(state.undoHistory, state.document);
+      return {
+        document: {
+          ...state.document,
+          actions: [...state.document.actions, carry],
+        },
+        undoHistory: newHistory,
+        canUndo: true,
+        pendingSourceId: null,
+        lastCreatedActionId: carry.id,
+        lastCreatedUndoDepth: newHistory.length,
+      };
+    }),
+
+  addCarryToEntity: (targetEntityId) =>
+    set((state) => {
+      const startT = maxActionEnd(state.document);
+      const ownerId = resolveOwnerAtT(state.document, startT);
+      if (!ownerId) return state;
+      const carry = makeCarry({
+        entityId: ownerId,
+        beatId: DEFAULT_BEAT_ID,
+        destinationEntityId: targetEntityId,
         start: startT,
         duration: 1.0,
       });

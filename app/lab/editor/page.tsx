@@ -35,7 +35,7 @@ import type { Tool } from '@/lib/engine/store';
 import { ROLE_ENTRIES, inferPosition, INFER_CONFIDENCE_THRESHOLD } from '@/lib/knowledge';
 import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions/documents';
 import type { DocSummary } from '@/app/actions/documents';
-import { resolveBoardState, resolveOwnerAtT, resolvePosition } from '@/lib/engine/resolve';
+import { resolveBoardState, resolveOwnerAtT, resolvePosition, resolveTargetPoint } from '@/lib/engine/resolve';
 import type { EntitySnapshot } from '@/lib/engine/resolve';
 import type { GafferDocument, Action, PlayerEntity, ZoneEntity } from '@/lib/engine/types';
 import type { BoardRendererProps, ActionOverlay } from '@/components/engine/BoardRenderer';
@@ -85,6 +85,21 @@ function findEntityAtPoint(entities: EntitySnapshot[], x: number, y: number): st
     const dx = e.x - x;
     const dy = e.y - y;
     if (dx * dx + dy * dy <= r * r) return e.id;
+  }
+  return null;
+}
+
+/** Find a zone entity id whose rect region contains (x,y). Zones are excluded from boardState,
+ *  so they need a separate hit-test directly against doc.entities. */
+function findZoneAtPoint(entities: GafferDocument['entities'], x: number, y: number): string | null {
+  for (const e of entities) {
+    if (e.kind !== 'zone') continue;
+    const { region } = e;
+    if (region.shape === 'rect') {
+      if (x >= region.x && x <= region.x + region.width && y >= region.y && y <= region.y + region.height) {
+        return e.id;
+      }
+    }
   }
   return null;
 }
@@ -256,6 +271,7 @@ export default function EditorPage() {
     addPass,
     addRun,
     addCarry,
+    addCarryToEntity,
     updateAction,
     deleteAction,
     deleteEntity,
@@ -465,8 +481,15 @@ export default function EditorPage() {
         const from = perim(passerPos.x, passerPos.y, eRadius(a.entityId));
         let to: { x: number; y: number };
         if ('entityId' in a.target) {
-          const receiverPos = resolvePosition(doc, a.target.entityId, a.start + a.duration);
-          to = perim(receiverPos.x, receiverPos.y, eRadius(a.target.entityId));
+          const targetId = a.target.entityId;
+          const targetEntity = doc.entities.find((e) => e.id === targetId);
+          if (targetEntity?.kind === 'player') {
+            const receiverPos = resolvePosition(doc, targetId, a.start + a.duration);
+            to = perim(receiverPos.x, receiverPos.y, eRadius(targetId));
+          } else {
+            // Non-player target: static reference point, no perimeter offset.
+            to = resolveTargetPoint(doc, targetId) ?? from;
+          }
         } else {
           to = { x: a.target.x, y: a.target.y };
         }
@@ -480,6 +503,12 @@ export default function EditorPage() {
         const startPos = resolvePosition(doc, a.entityId, a.start);
         const from = perim(startPos.x, startPos.y, eRadius(a.entityId));
         result.push({ id: a.id, kind: 'carry', x1: from.x, y1: from.y, x2: a.destination.x, y2: a.destination.y, active, selected: isSelected, cx, cy });
+
+      } else if (a.kind === 'carry' && a.destinationEntityId != null) {
+        const startPos = resolvePosition(doc, a.entityId, a.start);
+        const from = perim(startPos.x, startPos.y, eRadius(a.entityId));
+        const destPt = resolveTargetPoint(doc, a.destinationEntityId);
+        if (destPt) result.push({ id: a.id, kind: 'carry', x1: from.x, y1: from.y, x2: destPt.x, y2: destPt.y, active, selected: isSelected, cx, cy });
       }
     }
     return result;
@@ -612,7 +641,10 @@ export default function EditorPage() {
       if (targetId && targetId !== endOwner) {
         const target = doc.entities.find((e) => e.id === targetId);
         if (target?.kind === 'player') return `pass → ${entityLabel(doc, targetId)}`;
+        if (target?.kind === 'goal' || target?.kind === 'minigoal') return 'shot';
       }
+      const zoneId = findZoneAtPoint(doc.entities, cursorPos.x, cursorPos.y);
+      if (zoneId) return 'carry into zone';
       return 'carry';
     }
     const entity = doc.entities.find((e) => e.id === draggingId);
@@ -791,10 +823,18 @@ export default function EditorPage() {
           const target = targetId ? doc.entities.find((e) => e.id === targetId) : null;
           if (targetId && target?.kind === 'player' && targetId !== endOwner) {
             addPass(targetId);
+          } else if (targetId && (target?.kind === 'goal' || target?.kind === 'minigoal')) {
+            addPass(targetId); // shot into goal / mini-goal
           } else if (!targetId) {
-            addCarry(x, y);
+            // Check if dropped on a zone (zones are not in boardState.entities)
+            const zoneId = findZoneAtPoint(doc.entities, x, y);
+            if (zoneId) {
+              addCarryToEntity(zoneId); // carry into zone
+            } else {
+              addCarry(x, y); // carry into space
+            }
           }
-          // drop on endOwner itself or non-player → no-op
+          // drop on endOwner itself, cone, or mannequin → no-op
         } else {
           const entity = doc.entities.find((e) => e.id === id);
           if (entity?.kind === 'player') {
