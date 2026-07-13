@@ -89,20 +89,6 @@ function findEntityAtPoint(entities: EntitySnapshot[], x: number, y: number): st
   return null;
 }
 
-/** Find a zone entity id whose rect region contains (x,y). Zones are excluded from boardState,
- *  so they need a separate hit-test directly against doc.entities. */
-function findZoneAtPoint(entities: GafferDocument['entities'], x: number, y: number): string | null {
-  for (const e of entities) {
-    if (e.kind !== 'zone') continue;
-    const { region } = e;
-    if (region.shape === 'rect') {
-      if (x >= region.x && x <= region.x + region.width && y >= region.y && y <= region.y + region.height) {
-        return e.id;
-      }
-    }
-  }
-  return null;
-}
 
 function entityLabel(doc: GafferDocument, id: string): string {
   const e = doc.entities.find((e) => e.id === id);
@@ -641,11 +627,7 @@ export default function EditorPage() {
         const target = doc.entities.find((e) => e.id === targetId);
         if (target?.kind === 'player') return `pass → ${entityLabel(doc, targetId)}`;
         if (target?.kind === 'goal' || target?.kind === 'minigoal') return 'shot';
-        // cone, mannequin → fall through to carry
-      }
-      if (!targetId) {
-        const zoneId = findZoneAtPoint(doc.entities, cursorPos.x, cursorPos.y);
-        if (zoneId) return 'pass into zone';
+        // cone, mannequin, zone → fall through to carry
       }
       return 'carry';
     }
@@ -823,19 +805,14 @@ export default function EditorPage() {
         if (isBallSource) {
           const targetId = findEntityAtPoint(boardState.entities, x, y);
           const target = targetId ? doc.entities.find((e) => e.id === targetId) : null;
-          // Cones and mannequins are passive props — not valid pass endpoints.
+          // Cones, mannequins, and zones are not valid pass endpoints.
           const isValidTarget = targetId !== null && targetId !== endOwner &&
-            target?.kind !== 'cone' && target?.kind !== 'mannequin';
+            target?.kind !== 'cone' && target?.kind !== 'mannequin' && target?.kind !== 'zone';
           if (isValidTarget && targetId) {
             addPass(targetId); // player → pass, goal/minigoal → shot (same action, passType later)
-          } else if (!targetId) {
-            // No entity hit — check zones, then carry to space.
-            const zoneId = findZoneAtPoint(doc.entities, x, y);
-            if (zoneId) {
-              addPass(zoneId); // through-ball into zone
-            } else {
-              addCarry(x, y);
-            }
+          } else if (!targetId || target?.kind === 'zone') {
+            // No entity hit, or zone (treated as empty space) — carry to drop point.
+            addCarry(x, y);
           }
           // drop on endOwner itself, cone, mannequin → no-op
         } else {
