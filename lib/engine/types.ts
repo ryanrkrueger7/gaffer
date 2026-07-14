@@ -170,6 +170,30 @@ export interface Stage {
   markingLogic: boolean;
 }
 
+// ── Frame ─────────────────────────────────────────────────────────────────────
+
+export interface FrameTeam {
+  id: string;
+  color: string;
+  /** Null is valid when regime is not 'single-direction'. */
+  attackingDirection: 'up' | 'down' | null;
+  /** 'derived' — written by the system; 'explicit' — set or confirmed by the coach. */
+  directionSource: 'derived' | 'explicit';
+}
+
+export interface Frame {
+  regime: 'single-direction' | 'multi-directional' | 'none';
+  regimeSource: 'derived' | 'explicit';
+  teams: FrameTeam[];
+  identificationMode: 'positional' | 'unique-label';
+  identificationModeSource: 'derived' | 'explicit';
+  /** Optional per-team override of identificationMode. */
+  perTeamIdentificationMode?: Record<string, 'positional' | 'unique-label'>;
+  fieldExtent: 'full' | 'half' | 'blank';
+  scoringTargets: 'goal' | 'mini-goals' | 'dual' | 'none';
+  scoringTargetsSource: 'derived' | 'explicit';
+}
+
 // ── Markup ────────────────────────────────────────────────────────────────────
 
 export interface Markup {
@@ -200,6 +224,7 @@ export interface GafferDocument {
   schemaVersion: 1;
   meta: DocumentMeta;
   stage: Stage;
+  frame: Frame;
   entities: Entity[];
   actions: Action[];
   beats: Beat[];

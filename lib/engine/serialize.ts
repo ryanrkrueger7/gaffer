@@ -1,7 +1,50 @@
-import type { GafferDocument } from './types';
+import type { GafferDocument, Frame } from './types';
 
 export function serializeDocument(doc: GafferDocument): string {
   return JSON.stringify(doc, null, 2);
+}
+
+/**
+ * Build a Frame from an old document that predates the frame field.
+ *
+ * Migration rules (§3.6):
+ * - team A attackingDirection = stage.direction, directionSource 'explicit'
+ *   (the coach set this via the runtime toggle — treat it as intentional).
+ * - team B (if present in stage.teams) gets the opposite direction, 'derived'.
+ * - regime: any goal or mini-goal entity present → 'single-direction', else 'none'.
+ * - scoringTargets, identificationMode: conservative defaults ('none', 'positional').
+ * - fieldExtent: copied from stage.fieldExtent.
+ */
+function migrateFrame(obj: Record<string, unknown>): Frame {
+  const stage = (obj['stage'] ?? {}) as Record<string, unknown>;
+  const stageDirection = (stage['direction'] as 'up' | 'down') ?? 'up';
+  const stageTeams = (stage['teams'] as Array<{ id: string; color: string }>) ?? [];
+  const stageFieldExtent = (stage['fieldExtent'] as 'full' | 'half' | 'blank') ?? 'full';
+  const entities = (obj['entities'] as Array<Record<string, unknown>>) ?? [];
+
+  // Build per-team directions from stage state.
+  const frameTeams: Frame['teams'] = stageTeams.map((t, i) => ({
+    id: t.id,
+    color: t.color,
+    attackingDirection: i === 0 ? stageDirection : (stageDirection === 'up' ? 'down' : 'up'),
+    directionSource: i === 0 ? 'explicit' : 'derived',
+  }));
+
+  // Regime: goal or mini-goal entity present → 'single-direction'.
+  const hasGoalEntity = entities.some(
+    (e) => e['kind'] === 'goal' || e['kind'] === 'minigoal',
+  );
+
+  return {
+    regime: hasGoalEntity ? 'single-direction' : 'none',
+    regimeSource: 'derived',
+    teams: frameTeams,
+    identificationMode: 'positional',
+    identificationModeSource: 'derived',
+    fieldExtent: stageFieldExtent,
+    scoringTargets: 'none',
+    scoringTargetsSource: 'derived',
+  };
 }
 
 export function deserializeDocument(json: string): GafferDocument {
@@ -36,6 +79,12 @@ export function deserializeDocument(json: string): GafferDocument {
     if (!Array.isArray(obj[field])) {
       throw new Error(`deserializeDocument: "${field}" must be an array`);
     }
+  }
+
+  // Migration: old documents without `frame` get one synthesized from stage.
+  // New documents already carry frame in their JSON — no-op for them.
+  if (!('frame' in obj)) {
+    obj['frame'] = migrateFrame(obj);
   }
 
   return obj as unknown as GafferDocument;

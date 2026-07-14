@@ -269,10 +269,34 @@ export const useEditorStore = create<EditorStore>((set) => ({
           ...(state.placementIsGk ? { isGoalkeeper: true } : {}),
         },
       });
+
+      // Register team in frame.teams on first appearance (non-neutral only).
+      // Derivation rule §3.6: first non-neutral team placed → attackingDirection 'up';
+      // second → 'down'. directionSource 'derived' (coach has not explicitly set it yet).
+      const teamId = state.placementTeam;
+      let newFrame = state.document.frame;
+      if (teamId !== 'neutral' && !newFrame.teams.some((t) => t.id === teamId)) {
+        const nonNeutralCount = newFrame.teams.filter((t) => t.id !== 'neutral').length;
+        const direction: 'up' | 'down' = nonNeutralCount === 0 ? 'up' : 'down';
+        newFrame = {
+          ...newFrame,
+          teams: [
+            ...newFrame.teams,
+            {
+              id: teamId,
+              color: colorMap[teamId],
+              attackingDirection: direction,
+              directionSource: 'derived' as const,
+            },
+          ],
+        };
+      }
+
       return {
         document: {
           ...state.document,
           entities: [...state.document.entities, player],
+          frame: newFrame,
         },
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,

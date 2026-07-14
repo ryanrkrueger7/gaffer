@@ -42,6 +42,17 @@ export function createEmptyDocument(meta: Partial<DocumentMeta> = {}): GafferDoc
       teams: [{ id: 'A', color: 'yellow' }],
       markingLogic: false,
     },
+    frame: {
+      regime: 'none',
+      regimeSource: 'derived',
+      teams: [],
+      identificationMode: 'positional',
+      identificationModeSource: 'derived',
+      // Mirrors stage.fieldExtent default; Phase B will keep these in sync via derivation.
+      fieldExtent: 'full',
+      scoringTargets: 'none',
+      scoringTargetsSource: 'derived',
+    },
     entities: [],
     actions: [],
     beats: [],
