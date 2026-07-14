@@ -99,6 +99,50 @@ full / half / blank. Set pieces default to half.
 
 **Presets:** drill / tactic / set piece are Frame presets that set sensible defaults for the above; they are not separate engines or products.
 
+### 3.6 FROZEN Frame contract (v1) — build against this
+
+`doc.frame` (persisted, first-class; replaces the transient render-layer derivation):
+
+    frame: {
+      regime: 'single-direction' | 'multi-directional' | 'none',
+      regimeSource: 'derived' | 'explicit',
+      teams: Array<{
+        id: string,
+        color: string,
+        attackingDirection: 'up' | 'down' | null,   // null valid when regime ≠ single-direction
+        directionSource: 'derived' | 'explicit',
+      }>,
+      identificationMode: 'positional' | 'unique-label',
+      identificationModeSource: 'derived' | 'explicit',
+      perTeamIdentificationMode?: Record<teamId, mode>,   // optional override layer
+      fieldExtent: 'full' | 'half' | 'blank',
+      scoringTargets: 'goal' | 'mini-goals' | 'dual' | 'none',
+      scoringTargetsSource: 'derived' | 'explicit',
+    }
+
+**Source-flag rule (the core mechanism):** derivation rules may freely rewrite
+`derived` values as the scene changes; derivation NEVER touches an `explicit`
+value; any coach edit in the Frame UI marks that field explicit.
+
+**Derivation rules (v1, deliberately simple):**
+- First team placed → attackingDirection 'up'; second team → 'down'. Set at first placement.
+- fieldExtent 'full' seeds two real goal entities (top + bottom); 'half' seeds one (top);
+  'blank' seeds none. Seeded goals are ordinary entities — UUID, deletable, shootable.
+  Deleting a seeded goal marks scoringTargets explicit.
+- Regime: real goal(s) present → 'single-direction'; nothing → 'none'.
+  (Mini-goal-placement-flips-regime inference is deferred — the *Source machinery
+  exists so it can be added later as a pure derivation-rule change.)
+- regime 'multi-directional' or 'none' → propose identificationMode 'unique-label';
+  'single-direction' → 'positional'.
+
+**Migration:** existing documents' `stage.direction` becomes team A's attackingDirection
+(source 'explicit' — it was a manual toggle); team B derived opposite.
+`buildScoringDirection` in page.tsx is deleted; `inferPosition` consumes
+`frame.teams[].attackingDirection` directly.
+
+**Narration head reads (§6.1 minimum):** regime, per-team attackingDirection,
+identificationMode.
+
 ---
 
 ## 4. Objects and their semantics
@@ -163,11 +207,13 @@ Every narration the coach corrects is logged against a dictionary term ID (accep
 - No-through-marker crossing — an owned ball's side change rides the perimeter arc.
 - Cone-referencing / orbit paths and overlap gestures — pending a shared "curved reference path" primitive.
 - S-curve / second bezier handle. Polygon zones (type supports it; editor draws rect only). Marker label hierarchy (number prominent, position small). Beat CRUD objects. Full RLS/auth gating.
+- Goal entity orientation/rotation (goals currently always face north-south; needed only if horizontal field orientation is ever supported).
+- Mini-goal-placement-as-regime-cue derivation (placing mini-goals proposes multi-directional regime + unique-label mode; add as a derivation rule on top of the *Source machinery).
 
 ---
 
 ## 8. Open (settle before the relevant build)
-- **Freeze the full Frame contract** (§3) with the driving chat before building narration or the direction fix's Frame parts. Per-team direction must become persisted document state (retiring the transient `buildScoringDirection` derivation).
+- ~~Freeze the full Frame contract~~ — FROZEN as §3.6. Build against it.
 - Identity field names are **verified** (§2.1) — no reconciliation needed. `positionId` (UI) vs `inferredPositionId` (inference-only) are clean.
 - `lib/knowledge` export surface is **mostly clean**: the editor imports `inferPosition` from the `@/lib/knowledge` index (good). `formations.ts` is not re-exported from the index (used internally by `positionInference`) — fine unless a head needs `getFormation` directly, in which case add it to the index. `zones.ts` has geometry as descriptive strings only (no runtime geometry-testing function yet); `scoring.ts` is descriptive only (no resolution logic) — both fine for narration's first milestone, which doesn't need them.
 
