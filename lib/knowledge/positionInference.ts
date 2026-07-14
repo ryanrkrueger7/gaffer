@@ -41,9 +41,10 @@ function computeAxes(
       };
     case 'down':
       // Team attacks toward y = FIELD_Y_MAX (bottom). Own goal at top.
+      // Flank axis is mirrored: facing down, canvas-right is the team's left.
       return {
         attackProgress: (y - FIELD_Y_MIN) / fh,
-        flankPos: (x - FIELD_X_MIN) / fw,
+        flankPos: (FIELD_X_MAX - x) / fw,
       };
     case 'left':
       // Team attacks toward x = FIELD_X_MIN (left). Own goal at right.
