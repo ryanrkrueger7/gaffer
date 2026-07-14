@@ -340,6 +340,13 @@ export interface BoardRendererProps {
   onBoardMouseUp?: (x: number, y: number) => void;
   /** Called when a zone entity is clicked — page uses this for selection. */
   onZoneClick?: (id: string) => void;
+  /**
+   * Ids of seeded goal entities. Seeded goals are represented visually by the
+   * pitch paint (PitchFull/PitchHalf goal net graphics); GoalMarker is suppressed
+   * for them to avoid double rendering. Hit-testing and shot semantics are unaffected
+   * because findBallDropTarget reads doc.entities, not rendered nodes.
+   */
+  seededGoalIds?: ReadonlySet<string>;
 }
 
 export default function BoardRenderer({
@@ -364,6 +371,7 @@ export default function BoardRenderer({
   onBoardMouseDown,
   onBoardMouseUp,
   onZoneClick,
+  seededGoalIds,
 }: BoardRendererProps) {
   const { entities, ball, activeAnnotations } = boardState;
   const isDraggable = !!onEntityDragEnd;
@@ -518,9 +526,12 @@ export default function BoardRenderer({
             if (e.kind === 'mannequin') return (
               <MannequinMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
             );
-            if (e.kind === 'goal') return (
-              <GoalMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />
-            );
+            if (e.kind === 'goal') {
+              // Seeded goals are represented visually by the pitch paint; suppress
+              // GoalMarker to avoid double rendering. Entity remains live for hit-testing.
+              if (seededGoalIds?.has(e.id)) return null;
+              return <GoalMarker key={e.id} e={e} isSelected={sel} isPending={pend} draggable={isDraggable} onDragEnd={dragEnd} onDragStart={dragStart} />;
+            }
             return null;
           })}
 

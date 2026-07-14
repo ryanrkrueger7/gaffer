@@ -37,7 +37,7 @@ import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions
 import type { DocSummary } from '@/app/actions/documents';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition, resolveTargetPoint } from '@/lib/engine/resolve';
 import type { EntitySnapshot } from '@/lib/engine/resolve';
-import type { GafferDocument, Action, PlayerEntity, ZoneEntity, FrameTeam } from '@/lib/engine/types';
+import type { GafferDocument, Action, PlayerEntity, ZoneEntity, FrameTeam, GoalEntity } from '@/lib/engine/types';
 import type { BoardRendererProps, ActionOverlay } from '@/components/engine/BoardRenderer';
 
 const BoardRenderer = dynamic<BoardRendererProps>(
@@ -479,6 +479,12 @@ export default function EditorPage() {
   // Zone entities — passed directly to BoardRenderer (not in boardState.entities).
   const zones = useMemo(
     () => doc.entities.filter((e): e is ZoneEntity => e.kind === 'zone'),
+    [doc.entities],
+  );
+
+  // Seeded goal ids — renderer suppresses GoalMarker for these (pitch paint is the visual).
+  const seededGoalIds = useMemo(
+    () => new Set(doc.entities.filter((e) => e.kind === 'goal' && (e as GoalEntity).seeded).map((e) => e.id)),
     [doc.entities],
   );
 
@@ -1145,6 +1151,7 @@ export default function EditorPage() {
             onBoardMouseDown={handleBoardMouseDown}
             onBoardMouseUp={handleBoardMouseUp}
             onZoneClick={tool === 'select' ? (id) => { setSelected(id); selectAction(null); } : undefined}
+            seededGoalIds={seededGoalIds}
           />
 
           {/* Ghost position suggestion overlays — faint/dashed, shown only when:
