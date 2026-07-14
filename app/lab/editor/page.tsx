@@ -37,7 +37,7 @@ import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions
 import type { DocSummary } from '@/app/actions/documents';
 import { resolveBoardState, resolveOwnerAtT, resolvePosition, resolveTargetPoint } from '@/lib/engine/resolve';
 import type { EntitySnapshot } from '@/lib/engine/resolve';
-import type { GafferDocument, Action, PlayerEntity, ZoneEntity } from '@/lib/engine/types';
+import type { GafferDocument, Action, PlayerEntity, ZoneEntity, FrameTeam } from '@/lib/engine/types';
 import type { BoardRendererProps, ActionOverlay } from '@/components/engine/BoardRenderer';
 
 const BoardRenderer = dynamic<BoardRendererProps>(
@@ -67,11 +67,18 @@ const BoardRenderer = dynamic<BoardRendererProps>(
 // Known position IDs for identity parsing (e.g. "ST", "CAM").
 const POSITION_ID_SET = new Set<string>(ROLE_ENTRIES.map((e) => e.positionId));
 
-/** Constructs the scoringDirection Record expected by inferPosition().
- *  doc.stage.direction is the team-A attacking direction; B is the opposite. */
-function buildScoringDirection(direction: 'up' | 'down'): Record<string, 'up' | 'down' | 'left' | 'right'> {
-  const opp: 'up' | 'down' = direction === 'up' ? 'down' : 'up';
-  return { A: direction, B: opp, neutral: direction };
+/** Constructs the scoringDirection Record expected by inferPosition() from frame.teams. */
+function buildFrameScoringDirection(
+  frameTeams: FrameTeam[],
+): Record<string, 'up' | 'down' | 'left' | 'right'> {
+  const result: Record<string, 'up' | 'down' | 'left' | 'right'> = {};
+  for (const t of frameTeams) {
+    if (t.attackingDirection != null) result[t.id] = t.attackingDirection;
+  }
+  // Neutral entities inherit the first team's direction, or 'up' as a safe fallback.
+  const firstDir = frameTeams.find((t) => t.attackingDirection != null)?.attackingDirection ?? 'up';
+  result['neutral'] = firstDir;
+  return result;
 }
 
 const HIT_RADIUS = 22;
@@ -622,7 +629,7 @@ export default function EditorPage() {
     if (!lastCreatedEntityId) return;
     const entity = docRef.current.entities.find((e) => e.id === lastCreatedEntityId);
     if (entity?.kind !== 'player') return;
-    const scoringDir = buildScoringDirection(docRef.current.stage.direction);
+    const scoringDir = buildFrameScoringDirection(docRef.current.frame.teams);
     const { position, confidence } = inferPosition(entity.initial.x, entity.initial.y, entity.team ?? 'neutral', scoringDir);
     updatePlayerDisplay(lastCreatedEntityId, { inferredPositionId: position });
     setInferenceConfidenceMap((prev) => { const next = new Map(prev); next.set(lastCreatedEntityId, confidence); return next; });
@@ -846,7 +853,7 @@ export default function EditorPage() {
         // Re-infer position after drag — entity.team is on the doc entity, not snapshot.
         const movedEntity = doc.entities.find((e) => e.id === id);
         if (movedEntity?.kind === 'player') {
-          const scoringDir = buildScoringDirection(doc.stage.direction);
+          const scoringDir = buildFrameScoringDirection(doc.frame.teams);
           const { position, confidence } = inferPosition(x, y, movedEntity.team ?? 'neutral', scoringDir);
           updatePlayerDisplay(id, { inferredPositionId: position });
           setInferenceConfidenceMap((prev) => { const next = new Map(prev); next.set(id, confidence); return next; });

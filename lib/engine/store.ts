@@ -17,7 +17,7 @@ import {
   makeBeat,
 } from './factory';
 import { resolveOwnerAtT, resolvePosition, resolveTargetPoint } from './resolve';
-import type { GafferDocument, PlayerEntity, Region } from './types';
+import type { GafferDocument, PlayerEntity, Region, Frame, Entity, GoalEntity } from './types';
 
 export type Tool = 'select' | 'player' | 'ball' | 'cone' | 'minigoal' | 'goal' | 'mannequin' | 'zone' | 'author';
 
@@ -144,6 +144,26 @@ export function getActionChordEndpoints(
   return null;
 }
 
+/**
+ * Recompute derived frame fields (regime, scoringTargets) from current entity list.
+ * Source flags are respected: 'explicit' values are never overwritten.
+ */
+function recomputeFrameDerivations(frame: Frame, entities: Entity[]): Frame {
+  const next = { ...frame };
+  const hasGoal = entities.some((e) => e.kind === 'goal');
+  const hasMiniGoal = entities.some((e) => e.kind === 'minigoal');
+  if (next.regimeSource === 'derived') {
+    next.regime = hasGoal || hasMiniGoal ? 'single-direction' : 'none';
+  }
+  if (next.scoringTargetsSource === 'derived') {
+    if (hasGoal && hasMiniGoal) next.scoringTargets = 'dual';
+    else if (hasGoal) next.scoringTargets = 'goal';
+    else if (hasMiniGoal) next.scoringTargets = 'mini-goals';
+    else next.scoringTargets = 'none';
+  }
+  return next;
+}
+
 /** Push doc onto history, capped at UNDO_LIMIT entries. */
 function pushHistory(history: GafferDocument[], doc: GafferDocument): GafferDocument[] {
   const next = [...history, doc];
@@ -210,6 +230,8 @@ export interface EditorStore {
   renameDocument: (name: string) => void;
   /** Replace the current document entirely (e.g. loading from persistence). Resets all transient state. */
   loadDocument: (doc: GafferDocument) => void;
+  /** Flip stage.direction and mirror the change into frame.teams. */
+  toggleStageDirection: () => void;
 }
 
 export const useEditorStore = create<EditorStore>((set) => ({
@@ -345,8 +367,10 @@ export const useEditorStore = create<EditorStore>((set) => ({
   addMinigoal: (x, y) =>
     set((state) => {
       const minigoal = makeMinigoal({ initial: { x, y } });
+      const newEntities = [...state.document.entities, minigoal];
+      const newFrame = recomputeFrameDerivations(state.document.frame, newEntities);
       return {
-        document: { ...state.document, entities: [...state.document.entities, minigoal] },
+        document: { ...state.document, entities: newEntities, frame: newFrame },
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
       };
@@ -365,8 +389,10 @@ export const useEditorStore = create<EditorStore>((set) => ({
   addGoal: (x, y) =>
     set((state) => {
       const goal = makeGoal({ initial: { x, y } });
+      const newEntities = [...state.document.entities, goal];
+      const newFrame = recomputeFrameDerivations(state.document.frame, newEntities);
       return {
-        document: { ...state.document, entities: [...state.document.entities, goal] },
+        document: { ...state.document, entities: newEntities, frame: newFrame },
         undoHistory: pushHistory(state.undoHistory, state.document),
         canUndo: true,
       };
@@ -526,20 +552,47 @@ export const useEditorStore = create<EditorStore>((set) => ({
 
   deleteEntity: (id) =>
     set((state) => {
-      const isBall = state.document.entities.find((e) => e.id === id)?.kind === 'ball';
+      const deletedEntity = state.document.entities.find((e) => e.id === id);
+      const isBall = deletedEntity?.kind === 'ball';
+      const isSeededGoal = deletedEntity?.kind === 'goal' && (deletedEntity as GoalEntity).seeded === true;
+
+      const newEntities = state.document.entities.filter((e) => e.id !== id);
+      const newActions = state.document.actions.filter((a) => {
+        if (isBall) {
+          // Ball deleted — remove all possession-dependent actions
+          return a.kind !== 'pass' && a.kind !== 'carry';
+        }
+        if (a.entityId === id) return false;
+        if (a.kind === 'pass' && 'entityId' in a.target && a.target.entityId === id) return false;
+        return true;
+      });
+
+      let newFrame: Frame;
+      if (isSeededGoal) {
+        // Deleting a seeded goal is an explicit coach decision — compute the new
+        // scoringTargets value and mark it 'explicit' so future derivations don't
+        // automatically restore it.
+        const hasGoal = newEntities.some((e) => e.kind === 'goal');
+        const hasMiniGoal = newEntities.some((e) => e.kind === 'minigoal');
+        const newScoringTargets =
+          hasGoal && hasMiniGoal ? 'dual' : hasGoal ? 'goal' : hasMiniGoal ? 'mini-goals' : 'none';
+        const newRegime = hasGoal || hasMiniGoal ? 'single-direction' : 'none';
+        newFrame = {
+          ...state.document.frame,
+          regime: state.document.frame.regimeSource === 'explicit' ? state.document.frame.regime : newRegime,
+          scoringTargets: newScoringTargets,
+          scoringTargetsSource: 'explicit',
+        };
+      } else {
+        newFrame = recomputeFrameDerivations(state.document.frame, newEntities);
+      }
+
       return {
         document: {
           ...state.document,
-          entities: state.document.entities.filter((e) => e.id !== id),
-          actions: state.document.actions.filter((a) => {
-            if (isBall) {
-              // Ball deleted — remove all possession-dependent actions
-              return a.kind !== 'pass' && a.kind !== 'carry';
-            }
-            if (a.entityId === id) return false;
-            if (a.kind === 'pass' && 'entityId' in a.target && a.target.entityId === id) return false;
-            return true;
-          }),
+          entities: newEntities,
+          actions: newActions,
+          frame: newFrame,
         },
         selectedEntityId: state.selectedEntityId === id ? null : state.selectedEntityId,
         undoHistory: pushHistory(state.undoHistory, state.document),
@@ -587,6 +640,31 @@ export const useEditorStore = create<EditorStore>((set) => ({
       lastCreatedActionId: null,
       lastCreatedUndoDepth: 0,
       lastCreatedEntityId: null,
+    }),
+
+  toggleStageDirection: () =>
+    set((state) => {
+      const newDir: 'up' | 'down' = state.document.stage.direction === 'up' ? 'down' : 'up';
+      // Flip all team directions. First non-neutral team becomes 'explicit' (coach intent);
+      // subsequent teams remain 'derived' (they follow from the primary direction).
+      const newFrameTeams = state.document.frame.teams.map((t, i) => {
+        if (i > 0 && t.directionSource === 'explicit') return t;
+        return {
+          ...t,
+          attackingDirection:
+            t.attackingDirection === 'up' ? ('down' as const) :
+            t.attackingDirection === 'down' ? ('up' as const) :
+            t.attackingDirection,
+          directionSource: i === 0 ? ('explicit' as const) : t.directionSource,
+        };
+      });
+      return {
+        document: {
+          ...state.document,
+          stage: { ...state.document.stage, direction: newDir },
+          frame: { ...state.document.frame, teams: newFrameTeams },
+        },
+      };
     }),
 
   setActionCurve: (actionId, apexX, apexY) =>

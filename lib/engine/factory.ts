@@ -26,6 +26,18 @@ export function makeId(): string {
 
 export function createEmptyDocument(meta: Partial<DocumentMeta> = {}): GafferDocument {
   const now = new Date().toISOString();
+  const fieldExtent: 'full' | 'half' | 'blank' = 'full';
+
+  // Seed goals at field boundaries. Coordinates match the PitchFull net graphics
+  // in BoardRenderer.tsx: top net at y=6–10, bottom net at y=590–594.
+  const seededGoals: GoalEntity[] = [];
+  if (fieldExtent === 'full') {
+    seededGoals.push(makeGoal({ initial: { x: 400, y: 10 }, seeded: true }));
+    seededGoals.push(makeGoal({ initial: { x: 400, y: 590 }, seeded: true }));
+  } else if (fieldExtent === 'half') {
+    seededGoals.push(makeGoal({ initial: { x: 400, y: 10 }, seeded: true }));
+  }
+
   return {
     schemaVersion: 1,
     meta: {
@@ -37,23 +49,22 @@ export function createEmptyDocument(meta: Partial<DocumentMeta> = {}): GafferDoc
       createdAt: meta.createdAt ?? now,
     },
     stage: {
-      fieldExtent: 'full',
+      fieldExtent,
       direction: 'up',
       teams: [{ id: 'A', color: 'yellow' }],
       markingLogic: false,
     },
     frame: {
-      regime: 'none',
+      regime: seededGoals.length > 0 ? 'single-direction' : 'none',
       regimeSource: 'derived',
       teams: [],
       identificationMode: 'positional',
       identificationModeSource: 'derived',
-      // Mirrors stage.fieldExtent default; Phase B will keep these in sync via derivation.
-      fieldExtent: 'full',
-      scoringTargets: 'none',
+      fieldExtent,
+      scoringTargets: seededGoals.length > 0 ? 'goal' : 'none',
       scoringTargetsSource: 'derived',
     },
-    entities: [],
+    entities: seededGoals,
     actions: [],
     beats: [],
     annotations: [],
@@ -130,7 +141,7 @@ export function makeMannequin(
 export function makeGoal(
   opts: Partial<Omit<GoalEntity, 'id' | 'kind'>> = {}
 ): GoalEntity {
-  return {
+  const goal: GoalEntity = {
     kind: 'goal',
     id: makeId(),
     initial: opts.initial ?? { x: 0, y: 0 },
@@ -138,6 +149,8 @@ export function makeGoal(
     color: opts.color,
     radius: opts.radius,
   };
+  if (opts.seeded) goal.seeded = true;
+  return goal;
 }
 
 export function makeZone(

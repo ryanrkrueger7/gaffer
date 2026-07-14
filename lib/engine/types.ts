@@ -52,6 +52,8 @@ export interface MannequinEntity extends EntityBase {
 export interface GoalEntity extends EntityBase {
   kind: 'goal';
   initial: { x: number; y: number };
+  /** Set by createEmptyDocument() — indicates a system-placed goal from field seeding. */
+  seeded?: boolean;
 }
 
 export interface ZoneEntity extends EntityBase {
