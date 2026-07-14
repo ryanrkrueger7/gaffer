@@ -89,6 +89,62 @@ function findEntityAtPoint(entities: EntitySnapshot[], x: number, y: number): st
   return null;
 }
 
+// ── Authoring-only hit-test margins ───────────────────────────────────────────
+// These enlarged regions apply ONLY when resolving a ball-origin drag target.
+// They are NOT used for selection / delete / reposition click hit-testing.
+
+// GoalMarker rendered bounds (BoardRenderer.tsx GoalMarker):
+//   outer posts x ∈ [-28, 28], crossbar/post height y ∈ [-16, 16].
+//   +20 px halo on every side → half-extents 48 × 36.
+const GOAL_HIT_HALF_W = 48;
+const GOAL_HIT_HALF_H = 36;
+
+// MinigoalMarker rendered bounds (BoardRenderer.tsx MinigoalMarker):
+//   outer posts x ∈ [-20, 20], y ∈ [-14, 14].
+//   +20 px halo on every side → half-extents 40 × 34.
+const MINIGOAL_HIT_HALF_W = 40;
+const MINIGOAL_HIT_HALF_H = 34;
+
+// Extra px beyond entity.radius for player targets during a ball-origin drag.
+// Covers a drop landing ~15 px outside the edge of a medium (r=22) marker.
+const NEAR_MISS_MARGIN = 15;
+
+/**
+ * Find a valid ball-action target at (x, y) for a ball-origin authoring drag.
+ *
+ * Goals and mini-goals use a rectangular hit region proportional to their visual
+ * footprint plus a 20 px halo (see constants above). Players use their stored
+ * radius plus NEAR_MISS_MARGIN. Cones, mannequins, and zones are never returned.
+ *
+ * Player wins over goal when both are in range — a pass to a player near the
+ * goal mouth is more common than a shot intended at a player standing on the line.
+ *
+ * excludeId is the current ball owner; they are excluded so the owner cannot
+ * be the pass target (self-pass is nonsense). Pass null when there is no owner.
+ *
+ * Does NOT affect selection, deletion, or repositioning hit-testing.
+ */
+function findBallDropTarget(
+  entities: EntitySnapshot[],
+  x: number,
+  y: number,
+  excludeId: string | null,
+): string | null {
+  // Pass 1 — players (priority: first matching player is returned immediately).
+  for (const e of entities) {
+    if (e.id === excludeId || e.kind !== 'player') continue;
+    const r = (e.radius ?? HIT_RADIUS) + NEAR_MISS_MARGIN;
+    const dx = e.x - x, dy = e.y - y;
+    if (dx * dx + dy * dy <= r * r) return e.id;
+  }
+  // Pass 2 — goals and mini-goals (rectangular, proportional to visual footprint).
+  for (const e of entities) {
+    if (e.kind === 'goal' && Math.abs(e.x - x) <= GOAL_HIT_HALF_W && Math.abs(e.y - y) <= GOAL_HIT_HALF_H) return e.id;
+    if (e.kind === 'minigoal' && Math.abs(e.x - x) <= MINIGOAL_HIT_HALF_W && Math.abs(e.y - y) <= MINIGOAL_HIT_HALF_H) return e.id;
+  }
+  return null;
+}
+
 
 function entityLabel(doc: GafferDocument, id: string): string {
   const e = doc.entities.find((e) => e.id === id);
@@ -622,12 +678,12 @@ export default function EditorPage() {
     if (tool !== 'author' || !draggingId || !cursorPos) return null;
     const isBallSource = draggingId === ballEntityId || draggingId === endOwner;
     if (isBallSource) {
-      const targetId = findEntityAtPoint(boardState.entities, cursorPos.x, cursorPos.y);
-      if (targetId && targetId !== endOwner) {
+      // Use findBallDropTarget for hint consistency with drag-end resolution.
+      const targetId = findBallDropTarget(boardState.entities, cursorPos.x, cursorPos.y, endOwner ?? null);
+      if (targetId) {
         const target = doc.entities.find((e) => e.id === targetId);
         if (target?.kind === 'player') return `pass → ${entityLabel(doc, targetId)}`;
         if (target?.kind === 'goal' || target?.kind === 'minigoal') return 'shot';
-        // cone, mannequin, zone → fall through to carry
       }
       return 'carry';
     }
@@ -799,22 +855,28 @@ export default function EditorPage() {
       }
 
       case 'author': {
-        // inferGesture: ball/owner source → pass (onto player) or carry (into space)
+        // inferGesture: ball/owner source → pass (onto player/goal/mini-goal) or carry (into space)
         //               non-owner player → run
         const isBallSource = id === ballEntityId || id === endOwner;
         if (isBallSource) {
-          const targetId = findEntityAtPoint(boardState.entities, x, y);
-          const target = targetId ? doc.entities.find((e) => e.id === targetId) : null;
-          // Cones, mannequins, and zones are not valid pass endpoints.
-          const isValidTarget = targetId !== null && targetId !== endOwner &&
-            target?.kind !== 'cone' && target?.kind !== 'mannequin' && target?.kind !== 'zone';
-          if (isValidTarget && targetId) {
-            addPass(targetId); // player → pass, goal/minigoal → shot (same action, passType later)
-          } else if (!targetId || target?.kind === 'zone') {
-            // No entity hit, or zone (treated as empty space) — carry to drop point.
+          // findBallDropTarget: enlarged rect hit regions for goals/mini-goals,
+          // near-miss margin for players, endOwner excluded.
+          // Player wins over goal when both in range — see findBallDropTarget.
+          const targetId = findBallDropTarget(boardState.entities, x, y, endOwner ?? null);
+          if (targetId) {
+            // player → pass; goal/mini-goal → shot (resolver releases ball from shooter)
+            addPass(targetId);
+          } else {
+            // No valid target in range — drop in open space → carry.
+            // Exception: drop back on the owner's own marker is a self-cancel → no-op.
+            const ownerSnap = endOwner ? boardState.entities.find(e => e.id === endOwner) : null;
+            if (ownerSnap) {
+              const r = ownerSnap.radius ?? HIT_RADIUS;
+              const dx = ownerSnap.x - x, dy = ownerSnap.y - y;
+              if (dx * dx + dy * dy <= r * r) break; // self-cancel → no-op
+            }
             addCarry(x, y);
           }
-          // drop on endOwner itself, cone, mannequin → no-op
         } else {
           const entity = doc.entities.find((e) => e.id === id);
           if (entity?.kind === 'player') {
