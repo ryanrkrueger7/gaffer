@@ -39,6 +39,8 @@ import { resolveBoardState, resolveOwnerAtT, resolvePosition, resolveTargetPoint
 import type { EntitySnapshot } from '@/lib/engine/resolve';
 import type { GafferDocument, Action, PlayerEntity, ZoneEntity, FrameTeam, GoalEntity } from '@/lib/engine/types';
 import type { BoardRendererProps, ActionOverlay } from '@/components/engine/BoardRenderer';
+import { narrate } from '@/lib/intelligence';
+import type { NarrationResult } from '@/lib/intelligence';
 
 const BoardRenderer = dynamic<BoardRendererProps>(
   () => import('@/components/engine/BoardRenderer'),
@@ -334,6 +336,7 @@ export default function EditorPage() {
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [narrateResult, setNarrateResult] = useState<NarrationResult | null>(null);
   const [draggingApex, setDraggingApex] = useState<{ x: number; y: number } | null>(null);
 
   // ── Persistence state ──────────────────────────────────────────────────────
@@ -1405,6 +1408,37 @@ export default function EditorPage() {
             <pre className="mt-1 text-[10px] text-[#4a7a4e] bg-[#0b1a0d] border border-[#1e3a20] rounded p-3 overflow-auto max-h-64">
               {JSON.stringify(doc, null, 2)}
             </pre>
+          )}
+        </div>
+
+        {/* Narration panel */}
+        <div className="w-[800px]">
+          <button
+            onClick={() => setNarrateResult(narrate(doc))}
+            className="flex items-center gap-1 text-[11px] text-[#2d5a30] hover:text-[#4a7a4e] cursor-pointer"
+          >
+            <ChevronRight size={11} />
+            narrate
+          </button>
+          {narrateResult && (
+            <div className="mt-1 bg-[#0b1a0d] border border-[#1e3a20] rounded p-3">
+              {narrateResult.clauses.length === 0 ? (
+                <p className="text-[11px] text-[#4a7a4e]">No passes to narrate.</p>
+              ) : (
+                <ol className="list-decimal list-inside space-y-1">
+                  {narrateResult.clauses.map((c) => (
+                    <li key={c.beatIndex} className="text-[11px] text-[#86efac]">{c.text}</li>
+                  ))}
+                </ol>
+              )}
+              {narrateResult.notes.length > 0 && (
+                <ul className="mt-2 space-y-0.5">
+                  {narrateResult.notes.map((n, i) => (
+                    <li key={i} className="text-[10px] text-[#2d5a30]">{n}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       </div>

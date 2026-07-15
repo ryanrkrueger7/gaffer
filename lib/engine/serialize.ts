@@ -87,5 +87,19 @@ export function deserializeDocument(json: string): GafferDocument {
     obj['frame'] = migrateFrame(obj);
   }
 
+  // Integrity check: warn on duplicate action ids in persisted data.
+  // Action ids are crypto.randomUUID() — duplicates indicate storage corruption.
+  const actions = obj['actions'] as Array<{ id?: unknown }>;
+  const actionIds = new Set<string>();
+  for (const a of actions) {
+    const id = typeof a['id'] === 'string' ? a['id'] : null;
+    if (id !== null) {
+      if (actionIds.has(id)) {
+        console.warn(`[deserializeDocument] duplicate action id "${id}" in persisted document — possible data corruption.`);
+      }
+      actionIds.add(id);
+    }
+  }
+
   return obj as unknown as GafferDocument;
 }

@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "engine:demo": "tsx lib/engine/demo.ts"
+    "engine:demo": "tsx lib/engine/demo.ts",
+    "intelligence:demo": "tsx lib/intelligence/demo.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",

@@ -193,6 +193,24 @@ export const ROLE_ENTRIES: PositionEntry[] = [
 
 assertUniqueIds(ROLE_ENTRIES);
 
+// ── roleToLine ────────────────────────────────────────────────────────────────
+
+/** Map a PositionId to its field line — used by the reception-orientation model. */
+export function roleToLine(positionId: string): 'defender' | 'midfielder' | 'forward' | 'unknown' {
+  switch (positionId) {
+    case 'GK':
+    case 'LB': case 'CB': case 'LCB': case 'RCB': case 'RB':
+    case 'LWB': case 'RWB':
+      return 'defender';
+    case 'CDM': case 'LM': case 'CM': case 'RM': case 'CAM':
+      return 'midfielder';
+    case 'LW': case 'RW': case 'ST': case 'CF':
+      return 'forward';
+    default:
+      return 'unknown';
+  }
+}
+
 // ── resolveTerm ───────────────────────────────────────────────────────────────
 
 /**

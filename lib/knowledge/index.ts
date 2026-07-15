@@ -6,7 +6,9 @@
 import type { DictionaryEntry } from './types';
 import { assertUniqueIds } from './types';
 
-export { ROLE_ENTRIES, resolveTerm } from './roles';
+export { ROLE_ENTRIES, resolveTerm, roleToLine } from './roles';
+export { classifyPassDirection, classifyReception, classifyCarryLateral, PASS_DIRECTION_THRESHOLD, CARRY_LATERAL_MARGIN } from './passDirection';
+export type { PassDirection, ReceptionClassification, CarryLateral } from './passDirection';
 export { ZONE_ENTRIES } from './zones';
 export { SCORING_ENTRIES } from './scoring';
 export { inferPosition, INFER_CONFIDENCE_THRESHOLD } from './positionInference';

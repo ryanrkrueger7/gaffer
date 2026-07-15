@@ -200,6 +200,42 @@ Runs and off-ball movement, described relative to ball beats. High-level rules l
 ### 6.3 Correction loop (build the hook with 6.1)
 Every narration the coach corrects is logged against a dictionary term ID (accept/reject/edit). Design the narration output so each clause is attributable to a term, and emit a loggable event on correction — even before the logging store is wired. This log is the dataset that later makes generation learnable.
 
+### 6.4 FROZEN §6.2 contract — recognition signatures (Tier 1)
+
+Signatures live in lib/knowledge/signatures/ as TypeScript entries; the
+human-authored dictionary file is the source of truth for vocabulary,
+silence conditions, and contradictions — treated as DRAFT content, audited
+term-by-term as each signature is built. Signature shape:
+
+    TermSignature {
+      termId: string
+      actor: { line?: 'defender'|'midfielder'|'forward'; role?: string[] } | 'any'
+      trigger: Predicate[]        // ALL must hold
+      silence: Predicate[]        // ANY holding suppresses
+      contradictions: Array<{ termId: string, scope: 'beat'|'player-beat'|'possession' }>
+      anchor: 'ball'|'teammate'|'structure'
+      specificity: number         // same-action collisions: highest rank speaks,
+                                  // subsumed termIds still logged in clause termIds
+      phrase: { primary: string; variants: string[] }
+    }
+
+Predicates draw from a closed primitive vocabulary computed off the world
+model (lib/knowledge/primitives): distance-to-ball trend, run vector vs
+attack axis, path-inside/outside-teammate, beyond-furthest-teammate (Tier 1
+proxy for the last line; true last-line arrives with opponents/Tier 2),
+timing-overlap of run and pass, runtime zone containment (zones.ts gains
+real geometry — required, retiring its descriptive-only status), and
+receiver-of-next-pass.
+
+Run-term lifecycle (across beats): a fired run term attaches to its beat;
+if a later ball event delivers to the runner while/after the run, the
+narration at THAT beat references the earlier term ("continuing his run").
+Matcher maintains fired-unresolved run terms per player per possession.
+
+Tier ordering: Tier 1 (ball + teammates only) is milestone §6.2. Tier 2
+(requires opponents: DEF_*, draw/dummy, pin, goal-side, overload) follows.
+Tier 3 (body shape/pressure) fires weakly and is tuned by corrections.
+
 ---
 
 ## 7. Deferred (logged, not lost)
@@ -215,7 +251,7 @@ Every narration the coach corrects is logged against a dictionary term ID (accep
 ## 8. Open (settle before the relevant build)
 - ~~Freeze the full Frame contract~~ — FROZEN as §3.6. Build against it.
 - Identity field names are **verified** (§2.1) — no reconciliation needed. `positionId` (UI) vs `inferredPositionId` (inference-only) are clean.
-- `lib/knowledge` export surface is **mostly clean**: the editor imports `inferPosition` from the `@/lib/knowledge` index (good). `formations.ts` is not re-exported from the index (used internally by `positionInference`) — fine unless a head needs `getFormation` directly, in which case add it to the index. `zones.ts` has geometry as descriptive strings only (no runtime geometry-testing function yet); `scoring.ts` is descriptive only (no resolution logic) — both fine for narration's first milestone, which doesn't need them.
+- `lib/knowledge` export surface is **mostly clean**: the editor imports `inferPosition` from the `@/lib/knowledge` index (good). `formations.ts` is not re-exported from the index (used internally by `positionInference`) — fine unless a head needs `getFormation` directly, in which case add it to the index. `zones.ts` has geometry as descriptive strings only (no runtime geometry-testing function yet) - zones.ts descriptive-only line resolved-by-§6.4.; `scoring.ts` is descriptive only (no resolution logic) — both fine for narration's first milestone, which doesn't need them.
 
 ---
 
