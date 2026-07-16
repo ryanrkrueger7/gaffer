@@ -9,16 +9,42 @@
 //   owning the ball at any sample. startsBehind / pathSide / endsLevelOrBeyond
 //   all use the carrier identified by the window scan.
 //
+// FIX 3 — Proximity gate prevents false positives when runner is a channel away:
+//   Trace: LM a full channel away from CM made a diagonal run toward goal while
+//   CM's pass was in-flight. startsBehind/pathSide=outside/endsLevelOrBeyond all
+//   passed relationally, producing a spurious "the left midfielder overlaps."
+//   Fix: add trigger (f) — the runner's resolved path must pass within
+//   OVERLAP_PROXIMITY_PX of the carrier at corresponding sample times. A real
+//   around-the-outside arc must physically come close to the carrier.
+//   Debug output: minDist and the sample t where the minimum occurs.
+//
+// FIX 2 — In-flight-to-the-runner counts as teammate possession context:
+//   In run-meets-pass patterns (the relational timing rule makes the delivering
+//   pass concurrent with the run), the ball is in-flight for the run's entire
+//   window. resolveOwnerAtT returns null at every sample → window scan fails.
+//   Fix: at each sample, also check whether any teammate's pass is in flight
+//   (carrier = passer). This applies regardless of the pass's target, including
+//   passes to the runner himself. Geometric checks (startsBehind, pathSide,
+//   endsLevelOrBeyond) evaluate against the passer, who is the spatial reference
+//   for the overlap. Debug output gains a carrierVia field.
+//   Note: this helper is only used by MOV_OVERLAP; MOV_RUN_IN_BEHIND and
+//   MOV_CHECK_TO_BALL use unrelated primitives and are not affected.
+//
 // Predicate translation (trigger split for debug diagnostics):
 //   trigger (action = run):
 //     (a) run action + team has a known attacking direction
-//     (b) ownership window: at some t in [run.start, run.end], a teammate
-//         (not the runner) owns the ball — handles pass-and-go mid-flight starts
+//     (b) ownership window: at some t in [run.start, run.end], teammate possession
+//         context exists — teammate owns (carrierVia='owner') or teammate's pass
+//         is in flight (carrierVia='in-flight-passer')
 //     (c) startsBehind: runner begins closer to own goal than the ball-carrier
 //         (evaluated at run.start against the carrier from (b))
 //     (d) pathSide 'outside': runner's path goes between the carrier and the touchline
 //         (bezier-aware — uses peak of arc, not just straight-line midpoint)
 //     (e) endsLevelOrBeyond: runner ends at the same depth as or beyond the carrier
+//     (f) proximity: runner's resolved path passes within OVERLAP_PROXIMITY_PX of
+//         the carrier at corresponding sample times — catches the "channel away"
+//         false positive where all relational predicates pass but the runner never
+//         actually goes around the carrier
 //
 //   silence:
 //     (s1) the ball-carrier plays a FORWARD pass (not to the runner) before the
@@ -30,6 +56,20 @@
 import type { TermSignature } from './matcher';
 import type { GafferDocument, RunAction } from '../../engine/types';
 import { resolveOwnerAtT, resolvePosition } from '../../engine/resolve';
+
+/**
+ * Maximum distance (px) between any sample point on the runner's path and the
+ * carrier's position at the corresponding time. A real overlap arc must physically
+ * pass close to the carrier; a runner a full channel away will exceed this threshold.
+ */
+/**
+ * Maximum distance (px) between any sample point on the runner's path and the
+ * carrier's position at the corresponding time. Calibrated so that:
+ *   - genuine overlaps (runner 1–2 channels away, minDist ≤ ~230px) always pass;
+ *   - extreme false positives (runner on opposite side of field, minDist ≥ 300px) fail.
+ * Real-trace regressions showed 90px was too tight (legit overlaps had minDist 108–228px).
+ */
+export const OVERLAP_PROXIMITY_PX = 250;
 import {
   startsBehind,
   pathSide,
@@ -37,34 +77,82 @@ import {
 } from '../primitives';
 import { classifyPassDirection } from '../passDirection';
 
-// ── FIX 1: Window-based carrier resolution ────────────────────────────────────
+// ── Path sampling helper ──────────────────────────────────────────────────────
 
 /**
- * Scan [run.start, run.end] at 9 sample points to find the first teammate who owns
- * the ball (excluding the runner). Returns carrier id and sample time, or null.
+ * Returns the runner's canvas position at path parameter u ∈ [0, 1].
+ * Handles both straight (linear interpolation) and bezier (quadratic) paths.
+ */
+function resolvePathPoint(
+  run: RunAction,
+  u: number,
+  runnerStart: { x: number; y: number },
+  runnerEnd: { x: number; y: number },
+): { x: number; y: number } {
+  if (run.path.type === 'bezier') {
+    const { cx, cy } = run.path;
+    const mt = 1 - u;
+    return {
+      x: mt * mt * runnerStart.x + 2 * u * mt * cx + u * u * runnerEnd.x,
+      y: mt * mt * runnerStart.y + 2 * u * mt * cy + u * u * runnerEnd.y,
+    };
+  }
+  return {
+    x: runnerStart.x + u * (runnerEnd.x - runnerStart.x),
+    y: runnerStart.y + u * (runnerEnd.y - runnerStart.y),
+  };
+}
+
+// ── FIX 1 + FIX 2: Window-based carrier resolution ───────────────────────────
+
+/**
+ * Scan [run.start, run.end] at 9 sample points to find the first teammate who
+ * provides possession context. Two conditions are checked at each sample:
  *
- * Handles pass-and-go where the runner passes and starts the overlap run while
- * the ball is still in flight — at run.start the ball is 'inFlight' so
- * resolveOwnerAtT returns null, but at some later sample the ball arrives at the
- * teammate who becomes the carrier for all overlap geometric checks.
+ *   (a) owner: a teammate (not the runner) owns the ball — carrier = owner,
+ *       carrierVia = 'owner'.
+ *   (b) in-flight-passer: a pass authored by a teammate is in flight at t —
+ *       carrier = the passer, carrierVia = 'in-flight-passer'. Applies regardless
+ *       of the pass's target, including passes to the runner himself. This covers
+ *       run-meets-pass patterns where the delivering pass is concurrent with the
+ *       run and resolveOwnerAtT is null for the entire window.
+ *
+ * Geometric checks (startsBehind, pathSide, endsLevelOrBeyond) evaluate against
+ * the carrier returned here, whether owner or passer.
  */
 function resolveOverlapCarrier(
   doc: GafferDocument,
   run: RunAction,
   runnerId: string,
   runnerTeam: string | undefined,
-): { carrierId: string; sampleT: number } | null {
+): { carrierId: string; sampleT: number; carrierVia: 'owner' | 'in-flight-passer' } | null {
   if (!runnerTeam) return null;
   const runEnd = run.start + run.duration;
   const N = 8; // 9 points: i=0..8
   for (let i = 0; i <= N; i++) {
     const t = run.start + (runEnd - run.start) * (i / N);
+
+    // (a) teammate owns the ball
     const ownerId = resolveOwnerAtT(doc, t);
-    if (!ownerId || ownerId === runnerId) continue;
-    const ownerEntity = doc.entities.find(e => e.id === ownerId);
-    if (!ownerEntity || ownerEntity.kind !== 'player') continue;
-    if ((ownerEntity as { team?: string }).team !== runnerTeam) continue;
-    return { carrierId: ownerId, sampleT: t };
+    if (ownerId && ownerId !== runnerId) {
+      const ownerEntity = doc.entities.find(e => e.id === ownerId);
+      if (ownerEntity && ownerEntity.kind === 'player' &&
+          (ownerEntity as { team?: string }).team === runnerTeam) {
+        return { carrierId: ownerId, sampleT: t, carrierVia: 'owner' };
+      }
+    }
+
+    // (b) a teammate's pass is in flight at t — carrier = passer
+    for (const a of doc.actions) {
+      if (a.kind !== 'pass') continue;
+      const passEnd = a.start + a.duration;
+      if (t < a.start || t >= passEnd) continue; // not in flight at t
+      if (a.entityId === runnerId) continue;       // runner's own pass
+      const passerEntity = doc.entities.find(e => e.id === a.entityId);
+      if (!passerEntity || passerEntity.kind !== 'player') continue;
+      if ((passerEntity as { team?: string }).team !== runnerTeam) continue;
+      return { carrierId: a.entityId, sampleT: t, carrierVia: 'in-flight-passer' };
+    }
   }
   return null;
 }
@@ -92,7 +180,7 @@ export const MOV_OVERLAP: TermSignature = {
       const found = resolveOverlapCarrier(
         ctx.doc, run, ctx.actorId, (entity as { team?: string } | undefined)?.team,
       );
-      ctx.debug?.(`carrierId=${found?.carrierId ?? 'null'} sampleT=${found ? found.sampleT.toFixed(2) : 'n/a'}`);
+      ctx.debug?.(`carrierId=${found?.carrierId ?? 'null'} sampleT=${found ? found.sampleT.toFixed(2) : 'n/a'} carrierVia=${found?.carrierVia ?? 'n/a'}`);
       return found !== null;
     },
 
@@ -138,6 +226,40 @@ export const MOV_OVERLAP: TermSignature = {
       const beyond = endsLevelOrBeyond(ctx.doc, run, found.carrierId, attackDir);
       ctx.debug?.(`endsLevelOrBeyond=${beyond}`);
       return beyond;
+    },
+
+    // (f) proximity: runner's path passes within OVERLAP_PROXIMITY_PX of the carrier.
+    //     FIX 3: catches false positives where the runner is a full channel away from
+    //     the carrier but all relational predicates pass (startsBehind/outside/beyond).
+    //     Samples 9 points along the path and the carrier's position at each sample time.
+    (ctx) => {
+      const run = ctx.action as RunAction;
+      const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
+      const found = resolveOverlapCarrier(
+        ctx.doc, run, ctx.actorId, (entity as { team?: string } | undefined)?.team,
+      );
+      if (!found) return false;
+
+      const runnerStart = resolvePosition(ctx.doc, run.entityId, run.start);
+      const runnerEnd: { x: number; y: number } = 'x' in run.destination
+        ? { x: run.destination.x, y: run.destination.y }
+        : resolvePosition(ctx.doc, run.entityId, run.start + run.duration);
+
+      const N = 8; // 9 sample points: i = 0..8
+      let minDist = Infinity;
+      let minSampleT = run.start;
+
+      for (let i = 0; i <= N; i++) {
+        const u = i / N;
+        const sampleT = run.start + run.duration * u;
+        const runnerPos = resolvePathPoint(run, u, runnerStart, runnerEnd);
+        const carrierPos = resolvePosition(ctx.doc, found.carrierId, sampleT);
+        const dist = Math.hypot(runnerPos.x - carrierPos.x, runnerPos.y - carrierPos.y);
+        if (dist < minDist) { minDist = dist; minSampleT = sampleT; }
+      }
+
+      ctx.debug?.(`proximity minDist=${Math.round(minDist)}px at sampleT=${minSampleT.toFixed(2)} threshold=${OVERLAP_PROXIMITY_PX}px`);
+      return minDist <= OVERLAP_PROXIMITY_PX;
     },
   ],
   silence: [

@@ -24,26 +24,42 @@ export const MOV_RUN_IN_BEHIND: TermSignature = {
   termId: 'mov.run_in_behind',
   actor: 'any',
   trigger: [
+    // (a) run action + team has known attacking direction + runVector is toward-goal
     (ctx) => {
       if (ctx.action.kind !== 'run') return false;
       const run = ctx.action as RunAction;
-
       const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
       if (!entity || entity.kind !== 'player') return false;
       const frameTeam = ctx.frame.teams.find(t => t.id === entity.team);
       const attackDir = frameTeam?.attackingDirection;
       if (!attackDir) return false;
+      const vec = runVectorVsAttack(ctx.doc, run, attackDir);
+      ctx.debug?.(`runVector=${vec} attackDir=${attackDir}`);
+      return vec === 'toward-goal';
+    },
 
-      // (a) Run vector is toward goal
-      if (runVectorVsAttack(ctx.doc, run, attackDir) !== 'toward-goal') return false;
+    // (b) runner is beyond the furthest teammate at run.start (Tier 1 last-line proxy)
+    (ctx) => {
+      const run = ctx.action as RunAction;
+      const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
+      const frameTeam = ctx.frame.teams.find(t => t.id === (entity as { team?: string } | undefined)?.team);
+      const attackDir = frameTeam?.attackingDirection;
+      if (!attackDir) return false;
+      const beyond = beyondFurthestTeammate(ctx.doc, ctx.actorId, run.start, attackDir);
+      ctx.debug?.(`beyondFurthestTeammate=${beyond}`);
+      return beyond;
+    },
 
-      // (b) Runner is beyond furthest teammate (Tier 1 last-line proxy)
-      if (!beyondFurthestTeammate(ctx.doc, ctx.actorId, run.start, attackDir)) return false;
-
-      // (c) Run destination is in the box
-      if (!towardBox(ctx.doc, run, attackDir)) return false;
-
-      return true;
+    // (c) run destination is inside the attacked penalty box
+    (ctx) => {
+      const run = ctx.action as RunAction;
+      const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
+      const frameTeam = ctx.frame.teams.find(t => t.id === (entity as { team?: string } | undefined)?.team);
+      const attackDir = frameTeam?.attackingDirection;
+      if (!attackDir) return false;
+      const inBox = towardBox(ctx.doc, run, attackDir);
+      ctx.debug?.(`towardBox=${inBox}`);
+      return inBox;
     },
   ],
   silence: [],

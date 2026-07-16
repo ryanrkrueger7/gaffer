@@ -555,3 +555,270 @@ console.log('\n═════════════════════�
   // debug: true — so the ownership-window line from OVERLAP trigger[1] appears in notes.
   printResult('Verify (d) — pass-and-go overlap (FIX 1)', narrate(doc, { register: 'name', debug: true }));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Verification scene (e) — run-meets-pass overlap  ← FIX 2
+// LB passes to CM; CM holds; CM→LB pass is authored concurrent with LB's
+// overlap run (pass in flight for the run's entire window). resolveOwnerAtT
+// returns null at every sample; the in-flight-passer condition finds CM as
+// carrier (carrierVia='in-flight-passer').
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   LB  (150, 400)  — left back, starts with ball
+//   CM  (350, 350)  — central midfielder
+//
+// Timeline:
+//   t=0.0 d=0.8: LB→CM pass (LB gives ball to CM)
+//   t=1.0 d=1.0: LB overlap run (150,400)→(80,200)   — starts after pass
+//   t=1.0 d=1.0: CM→LB pass concurrent with run      — in flight [1.0, 2.0]
+//
+// resolveOverlapCarrier scan over [1.0, 2.0]:
+//   Every sample: resolveOwnerAtT = null (CM→LB in-flight)
+//   condition (b): CM→LB pass in flight, passer=CM ≠ LB, same team
+//   → {carrierId: CM, sampleT: 1.00, carrierVia: 'in-flight-passer'}
+//
+// Geometry (carrier = CM):
+//   startsBehind: LB y=400 > CM y=350 → behind ✓  (at t=1.0, 'up' attack)
+//   pathSide: midX=(150+80)/2=115; CM x=350, nearerTouchline=10, dist 340;
+//             runner dist=105 < 340 → outside ✓
+//   endsLevelOrBeyond: LB end y=200 ≤ CM y=350 at t=2.0 → beyond ✓
+//
+// CHECK_TO_BALL: silenced (runVector toward-goal, fc≈0.94)
+// RUN_IN_BEHIND: fails beyondFurthestTeammate (CM y=350 < LB y=400 for 'up')
+// → only OVERLAP fires
+//
+// Expected clauses:
+//   1. the left back plays the central midfielder
+//   2. the left back overlaps
+//   3. the left back, continuing his run, receives from the central midfielder
+// Debug notes should contain:
+//   carrierId=<cm_id> sampleT=1.00 carrierVia=in-flight-passer
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Verify (e) — run-meets-pass overlap' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const lb   = makePlayer({ team: 'A', initial: { x: 150, y: 400 }, display: { positionId: 'LB' } });
+  const cm   = makePlayer({ team: 'A', initial: { x: 350, y: 350 }, display: { positionId: 'CM' } });
+  const ball = makeBall({ initial: { x: 150, y: 400 } }); // LB has ball
+
+  doc.entities.push(lb, cm, ball);
+
+  // LB passes to CM to set up the overlap, then CM delivers back concurrently with LB's run.
+  const p1    = makePass({ entityId: lb.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.0, duration: 0.8 });
+  const lbRun = makeRun({ entityId: lb.id, beatId: beat.id, destination: { x: 80, y: 200 }, start: 1.0, duration: 1.0 });
+  // CM→LB pass concurrent with LB's run: ball in flight [1.0, 2.0] for the entire run window.
+  const p2    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lb.id }, start: 1.0, duration: 1.0 });
+
+  doc.actions.push(p1, lbRun, p2);
+
+  // debug: true — to see carrierId/sampleT/carrierVia in the overlap trigger[1] note.
+  printResult('Verify (e) — run-meets-pass overlap (FIX 2)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Verification scene (f) — run chaining (extension run)
+// LB→LM pass; LM bounces to CM; LB overlap run R1 (unresolved on that leg);
+// LB second run R2 continuing from R1's end; CM→LB pass meeting R2.
+//
+// Without the fix: R2 independently matches CHECK_TO_BALL (spurious clause),
+// R2 overwrites R1 in resolvedRunAtPass → continuation phrase lost.
+// With the fix: R2 detected as EXTENSION of R1 → skipped from matching entirely;
+// R1 (OVERLAP) resolves to CM→LB pass; continuation phrase preserved.
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   LB  (150, 400)  — left back, starts with ball
+//   LM  (250, 300)  — left midfielder
+//   CM  (350, 290)  — central midfielder
+//
+// Timeline:
+//   t=0.0 d=0.8: LB→LM pass
+//   t=0.8 d=0.8: LM→CM pass (bounce)
+//   t=1.6 d=1.0: LB overlap run R1: (150,400)→(80,250), ends t=2.6
+//   t=2.7 d=0.8: LB second run R2: (80,250)→(80,100)   ← extension of R1
+//   t=2.7 d=0.8: CM→LB pass: meets R2, arrives t=3.5
+//
+// Extension detection for R2:
+//   temporal: 2.7 - 2.6 = 0.1s ≤ 1.5s ✓
+//   spatial:  LB at R1.end (t=2.6) = (80,250); LB at R2.start (t=2.7) = (80,250)
+//             dist = 0 ≤ 40px ✓
+//
+// Overlap geometry for R1 (carrier = CM via resolveOwnerAtT at t=1.6):
+//   startsBehind: LB y=400 > CM y=290 → behind ✓
+//   pathSide: midX=115, CM x=350, nearer touchline x=10; 105 < 340 → outside ✓
+//   endsLevelOrBeyond: LB end y=250 ≤ CM y=290 at t=2.6 → beyond ✓
+//
+// Lifecycle: resolveRunLifecycle(R1) finds CM→LB pass (starts t=2.7 ≥ R1.start=1.6)
+//   R1.resolution = { receivingPassActionId: CM→LB pass }
+//   R2 skipped → resolvedRunAtPass[CM→LB] stays as R1 (OVERLAP) → continuation ✓
+//
+// Expected clauses:
+//   1. the left back plays the left midfielder
+//   2. the left midfielder lays it off to the central midfielder
+//   3. the left back overlaps
+//   4. the left back, continuing his run, receives from the central midfielder
+// Debug notes should contain:
+//   [<R2_id>] run EXTENSION of [<R1_id>] (term mov.overlap)
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Verify (f) — run chaining (extension run)' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const lb   = makePlayer({ team: 'A', initial: { x: 150, y: 400 }, display: { positionId: 'LB' } });
+  const lm   = makePlayer({ team: 'A', initial: { x: 250, y: 300 }, display: { positionId: 'LM' } });
+  const cm   = makePlayer({ team: 'A', initial: { x: 350, y: 290 }, display: { positionId: 'CM' } });
+  const ball = makeBall({ initial: { x: 150, y: 400 } }); // LB has ball
+
+  doc.entities.push(lb, lm, cm, ball);
+
+  const p1    = makePass({ entityId: lb.id, beatId: beat.id, target: { entityId: lm.id }, start: 0.0, duration: 0.8 });
+  const p2    = makePass({ entityId: lm.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.8, duration: 0.8 });
+  // R1: LB overlap run — ball not delivered on this leg.
+  const lbR1  = makeRun({ entityId: lb.id, beatId: beat.id, destination: { x: 80, y: 250 }, start: 1.6, duration: 1.0 });
+  // R2: LB second run continuing from R1's end — extension.
+  const lbR2  = makeRun({ entityId: lb.id, beatId: beat.id, destination: { x: 80, y: 100 }, start: 2.7, duration: 0.8 });
+  // CM delivers to LB into R2.
+  const p3    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lb.id }, start: 2.7, duration: 0.8 });
+
+  doc.actions.push(p1, p2, lbR1, lbR2, p3);
+
+  // debug: true — to see the EXTENSION log line in notes.
+  printResult('Verify (f) — run chaining (FIX)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene G — false-positive proximity gate  ← FIX 3
+// LM (far left touchline) makes a forward run straight up the left channel while
+// CM (center-left) concurrent pass is in-flight. ALL four relational predicates
+// pass (startsBehind/pathSide=outside/endsLevelOrBeyond), but LM is ~316px from
+// CM — nowhere near "going around" anyone.
+// OVERLAP must NOT match (proximity minDist ≫ OVERLAP_PROXIMITY_PX=250px).
+// The proximity gate is the decisive discriminator (trigger[5]=false).
+//
+// pathSide logic: CM at x=350 < pitchCenterX=400 → nearerTouchlineX=10 (left).
+// LM mid x=50: dist to left touchline=40. CM dist=340. 40<340 → outside ✓.
+// But minDist=√((50-350)²+(400-300)²)≈316px > 250px → trigger[5] false ✓.
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   CB  (400, 490)  — center back, starts with ball
+//   CM  (350, 300)  — left-center midfielder   ← the carrier (left of center)
+//   LM  (50,  400)  — left midfielder (far left touchline, behind CM)
+//
+// Timeline:
+//   t=0.0 d=0.8: CB→CM pass (CM gets ball at t=0.8)
+//   t=1.0 d=1.0: LM run (50,400)→(50,80)   ← straight up left touchline, t=[1.0,2.0]
+//   t=1.0 d=1.0: CM→LM pass concurrent with run (in-flight [1.0,2.0])
+//
+// resolveOverlapCarrier: CM→LM in-flight → {carrierId: CM, sampleT: 1.0, carrierVia: 'in-flight-passer'}
+//
+// Relational predicates vs CM (x=350, y=300):
+//   startsBehind: LM y=400 > CM y=300 → behind ✓
+//   pathSide: LM mid x=50. CM x=350. Left touchline x=10.
+//             LM dist=|50-10|=40. CM dist=|350-10|=340. 40<340 → outside ✓
+//   endsLevelOrBeyond: LM end y=80 ≤ CM y=300 → beyond ✓
+//
+// Proximity check (LM path vs CM position):
+//   CM stays at (350,300). LM runs straight up from (50,400) to (50,80).
+//   At i=0: dist=√((50-350)²+(400-300)²)=√(90000+10000)≈316px
+//   At midpoint (u=0.5): LM=(50,240), dist=√((50-350)²+(240-300)²)=√(90000+3600)≈306px
+//   minDist≈306px ≫ 250px → trigger[5] false → OVERLAP rejected ✓
+//
+// MOV_CHECK_TO_BALL: LM run toward-goal (fc=1.0) → silence[0] fires → SILENCED
+// MOV_RUN_IN_BEHIND: LM y=400 > CM y=300 → beyondFurthestTeammate=false → trigger[1] false
+//
+// Expected output:
+//   1. the center back plays the central midfielder
+//   2. the central midfielder plays the left midfielder
+//   LM run: SILENT ← all 4 relational predicates pass; proximity gate blocks at minDist≈306px
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene G — false-positive proximity gate' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const cb   = makePlayer({ team: 'A', initial: { x: 400, y: 490 }, display: { positionId: 'CB' } });
+  // CM is left of center so its nearerTouchline=x=10; LM at x=50 is correctly 'outside'
+  const cm   = makePlayer({ team: 'A', initial: { x: 350, y: 300 }, display: { positionId: 'CM' } });
+  const lm   = makePlayer({ team: 'A', initial: { x: 50,  y: 400 }, display: { positionId: 'LM' } });
+  const ball = makeBall({ initial: { x: 400, y: 490 } });
+
+  doc.entities.push(cb, cm, lm, ball);
+
+  const p1    = makePass({ entityId: cb.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.0, duration: 0.8 });
+  // LM runs straight up the far left touchline while CM's concurrent pass is in flight.
+  const lmRun = makeRun({ entityId: lm.id, beatId: beat.id, destination: { x: 50, y: 80 }, start: 1.0, duration: 1.0 });
+  const p2    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lm.id }, start: 1.0, duration: 1.0 });
+
+  doc.actions.push(p1, lmRun, p2);
+
+  // debug: true — proximity gate is decisive: all 4 relational triggers pass, trigger[5] fails.
+  printResult('Scene G — false-positive proximity (OVERLAP must NOT match)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene H — true-positive real overlap  ← FIX 3 (passes)
+// LM makes a genuine around-the-outside run close to CM during CM's in-flight pass.
+// OVERLAP must match; proximity minDist ≤ 90px reported in debug.
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   CB  (400, 490)  — center back, starts with ball
+//   CM  (200, 350)  — central midfielder   ← the carrier
+//   LM  (150, 420)  — left midfielder      ← the real overlapper (tight to CM)
+//
+// Timeline:
+//   t=0.0 d=0.8: CB→CM pass (CM gets ball at t=0.8)
+//   t=0.8 d=1.0: LM run (150,420)→(80,200)  ← outside arc, t=[0.8,1.8]
+//   t=0.8 d=1.0: CM→LM pass concurrent with run (run-meets-pass; in-flight [0.8,1.8])
+//
+// resolveOverlapCarrier: at each sample in [0.8,1.8], CM→LM in-flight
+//   → {carrierId: CM, sampleT: 0.8, carrierVia: 'in-flight-passer'}
+//
+// Relational predicates vs CM (x=200, y=350):
+//   startsBehind: LM y=420 > CM y=350 → behind ✓
+//   pathSide: LM start x=150, end x=80, mid x=115. CM x=200. Nearer touchline x=10.
+//             LM dist to touchline = 115-10=105. CM dist = 200-10=190. 105<190 → outside ✓
+//   endsLevelOrBeyond: LM end y=200 ≤ CM y=350 → beyond ✓
+//
+// Proximity check (LM path vs CM position):
+//   CM stays at (200,350) for the run window. LM starts at (150,420), ends at (80,200).
+//   At closest approach (sampleT≈1.05, u=0.25): dist≈69px
+//   69 ≤ 250 → proximity PASSES → OVERLAP matches ✓
+//
+// MOV_CHECK_TO_BALL: silenced (LM run dy=-220, toward-goal)
+// MOV_RUN_IN_BEHIND: LM y=420 > CM y=350 for 'up' → LM is NOT beyond CM → trigger[1] false
+// → only OVERLAP fires
+//
+// Expected clauses:
+//   1. the center back plays the central midfielder
+//   2. the left midfielder overlaps
+//   3. the left midfielder, continuing his run, receives from the central midfielder
+// Debug: proximity minDist≈69px at sampleT≈1.05 threshold=250px
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene H — real overlap (proximity passes)' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const cb   = makePlayer({ team: 'A', initial: { x: 400, y: 490 }, display: { positionId: 'CB' } });
+  const cm   = makePlayer({ team: 'A', initial: { x: 200, y: 350 }, display: { positionId: 'CM' } });
+  const lm   = makePlayer({ team: 'A', initial: { x: 150, y: 420 }, display: { positionId: 'LM' } });
+  const ball = makeBall({ initial: { x: 400, y: 490 } });
+
+  doc.entities.push(cb, cm, lm, ball);
+
+  const p1    = makePass({ entityId: cb.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.0, duration: 0.8 });
+  // LM overlap run concurrent with CM→LM pass.
+  const lmRun = makeRun({ entityId: lm.id, beatId: beat.id, destination: { x: 80, y: 200 }, start: 0.8, duration: 1.0 });
+  const p2    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lm.id }, start: 0.8, duration: 1.0 });
+
+  doc.actions.push(p1, lmRun, p2);
+
+  // debug: true — to see proximity minDist in OVERLAP trigger[5] note.
+  printResult('Scene H — real overlap, proximity passes (FIX 3)', narrate(doc, { register: 'name', debug: true }));
+}

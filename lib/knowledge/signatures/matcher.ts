@@ -6,6 +6,21 @@ import type { GafferDocument, RunAction, PassAction, Action } from '../../engine
 import type { Frame, Beat } from '../../engine/types';
 import { roleToLine } from '../roles';
 import { receiverOf } from '../primitives';
+import { resolvePosition } from '../../engine/resolve';
+
+// ── Run-chaining constants ────────────────────────────────────────────────────
+
+/**
+ * Maximum distance (px) between the resolved end-position of run R1 and the
+ * start-position of run R2 for R2 to be considered an extension of R1.
+ */
+export const EXTENSION_SPATIAL_THRESHOLD_PX = 40;
+
+/**
+ * Maximum time gap (seconds) between the end of run R1 and the start of run R2
+ * for R2 to be considered an extension of R1.
+ */
+export const EXTENSION_TEMPORAL_THRESHOLD_S = 1.5;
 
 // ── TermSignature (§6.4 contract) ────────────────────────────────────────────
 
@@ -105,6 +120,27 @@ function resolveRunLifecycle(
   return null;
 }
 
+/**
+ * Returns true if run R2 is a continuation of run R1 by the same player:
+ *   - temporal: R2.start is within EXTENSION_TEMPORAL_THRESHOLD_S of R1.end
+ *   - spatial:  player's resolved position at R1.end is within
+ *               EXTENSION_SPATIAL_THRESHOLD_PX of their position at R2.start
+ *
+ * Both checks must hold. Assumes R1 and R2 belong to the same entity.
+ */
+function isExtensionRun(
+  run: RunAction,
+  lastRun: RunAction,
+  doc: GafferDocument,
+): boolean {
+  const lastRunEnd = lastRun.start + lastRun.duration;
+  if (run.start - lastRunEnd > EXTENSION_TEMPORAL_THRESHOLD_S) return false;
+  const posAtLastEnd  = resolvePosition(doc, lastRun.entityId, lastRunEnd);
+  const posAtRunStart = resolvePosition(doc, run.entityId,     run.start);
+  const dist = Math.hypot(posAtLastEnd.x - posAtRunStart.x, posAtLastEnd.y - posAtRunStart.y);
+  return dist <= EXTENSION_SPATIAL_THRESHOLD_PX;
+}
+
 // ── matchSignatures ───────────────────────────────────────────────────────────
 
 /**
@@ -131,12 +167,44 @@ export function matchSignatures(
 ): MatchedTerm[] {
   const results: MatchedTerm[] = [];
 
+  // Run chaining: tracks the most-recent matched run-term and run-action for each player.
+  // When a player's next run qualifies as an extension (spatial + temporal), it is excluded
+  // from independent signature matching and inherits the parent term's lifecycle instead.
+  type ChainEntry = { term: MatchedTerm; lastRun: RunAction };
+  const chainParent = new Map<string, ChainEntry>();
+
   const sortedActions = [...doc.actions].sort((a, b) => a.start - b.start);
 
   for (const action of sortedActions) {
     if (action.kind !== 'run' && action.kind !== 'pass') continue;
 
     const actorId = action.entityId;
+
+    // ── Run-chaining: extension detection ──────────────────────────────────
+    if (action.kind === 'run') {
+      const run = action as RunAction;
+      const chain = chainParent.get(actorId);
+      if (chain) {
+        if (isExtensionRun(run, chain.lastRun, doc)) {
+          // Extension run — skip independent signature matching entirely.
+          debugNotes?.push(
+            `[${run.id.slice(-6)}] run EXTENSION of [${chain.lastRun.id.slice(-6)}] (term ${chain.term.termId})`,
+          );
+          // If the parent term is still unresolved, try to resolve it using this leg's window.
+          if (chain.term.resolution === 'unresolved') {
+            const passId = resolveRunLifecycle(run, doc);
+            if (passId) {
+              chain.term.resolution = { receivingPassActionId: passId };
+            }
+          }
+          // Advance the chain's last-run reference to this leg.
+          chain.lastRun = run;
+          continue; // do not enter the candidate loop for this run
+        }
+        // Gap too large or position too far — this is a new independent run; clear the chain.
+        chainParent.delete(actorId);
+      }
+    }
 
     // Collect candidates: signatures whose actor filter + trigger + silence pass.
     const candidates: TermSignature[] = [];
@@ -202,7 +270,7 @@ export function matchSignatures(
     }
     // Pass terms (e.g. ACT_LAYOFF_UNDERNEATH) don't need lifecycle resolution.
 
-    results.push({
+    const newTerm: MatchedTerm = {
       termId: winner.termId,
       actionId: action.id,
       actorId,
@@ -210,7 +278,16 @@ export function matchSignatures(
       specificity: winner.specificity,
       subsumedTermIds,
       resolution,
-    });
+    };
+    results.push(newTerm);
+
+    // Track matched run terms as potential chain parents for subsequent extension detection.
+    // We track all matched run terms (resolved or not) so that if R2 is authored after R1
+    // and both would resolve to the same delivering pass, R2 is suppressed rather than
+    // overwriting R1's entry in resolvedRunAtPass.
+    if (action.kind === 'run') {
+      chainParent.set(actorId, { term: newTerm, lastRun: action as RunAction });
+    }
   }
 
   return results;

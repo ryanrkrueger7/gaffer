@@ -436,9 +436,25 @@ export const useEditorStore = create<EditorStore>((set) => ({
       const targetRun = allTargetRuns.length > 0
         ? allTargetRuns[allTargetRuns.length - 1]
         : undefined;
-      const startT = targetRun ? targetRun.start : maxActionEnd(state.document);
-      const duration = targetRun ? targetRun.duration : 0.8;
 
+      const intendedStart = targetRun ? targetRun.start : maxActionEnd(state.document);
+
+      // Timeline integrity: a pass may never start before its passer has possession.
+      // The passer acquires the ball at the end of the sequence's last ball event (pass/carry).
+      // If the runner's window would require an earlier departure, clamp the start to that
+      // time; adjust duration so the ball still arrives at/near the run's resolved end-point.
+      // If the run has already ended by the clamped start, fall back to a default duration
+      // (ball arrives at the runner's destination).
+      const lastBallEventEnd = state.document.actions
+        .filter(a => a.kind === 'pass' || a.kind === 'carry')
+        .reduce((max, a) => Math.max(max, a.start + a.duration), 0);
+      const startT = Math.max(intendedStart, lastBallEventEnd);
+
+      const runEnd = targetRun ? targetRun.start + targetRun.duration : startT + 0.8;
+      const duration = runEnd > startT ? runEnd - startT : 0.8;
+
+      // Passer is derived from ownership at the CLAMPED start — whoever legally
+      // holds the ball when this pass departs, not at the unclamped runner window.
       const ownerId = resolveOwnerAtT(state.document, startT);
       if (!ownerId) return state;
       const pass = makePass({
