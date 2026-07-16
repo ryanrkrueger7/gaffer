@@ -1,4 +1,4 @@
-// Gaffer knowledge layer — named zone dictionary.
+// Gaffer knowledge layer — named zone dictionary + runtime geometry.
 // No UI, no engine imports, no side effects.
 //
 // DUPLICATION NOTE: FIELD_X_MIN/MAX/Y_MIN/MAX are also defined (unexported)
@@ -10,10 +10,39 @@
 import type { DictionaryEntry } from './types';
 import { assertUniqueIds } from './types';
 
-// ── Field boundary reference (mirrors positionInference.ts) ──────────────────
-// FIELD_X_MIN=10, FIELD_X_MAX=790, FIELD_Y_MIN=10, FIELD_Y_MAX=590.
-// These are used only in the geometryMapping.regions string descriptions below —
-// no runtime geometry testing is built here, so no declarations needed.
+// ── Field boundary constants (exported for use by primitives + matcher) ───────
+export const FIELD_X_MIN = 10;
+export const FIELD_X_MAX = 790;
+export const FIELD_Y_MIN = 10;
+export const FIELD_Y_MAX = 590;
+export const FIELD_W = FIELD_X_MAX - FIELD_X_MIN; // 780
+export const FIELD_H = FIELD_Y_MAX - FIELD_Y_MIN; // 580
+export const PITCH_CENTER_X = (FIELD_X_MIN + FIELD_X_MAX) / 2; // 400
+export const PITCH_CENTER_Y = (FIELD_Y_MIN + FIELD_Y_MAX) / 2; // 300
+
+// ── Normalised-axis thresholds (from zone geometryMapping.regions strings) ───
+// attackProgress axis: 0 = own goal end, 1 = opponent goal end.
+// flankPos axis: 0 = left flank (from team's attacking perspective), 1 = right.
+
+export const ZONE_THRESHOLDS = {
+  leftChannelMaxFlank:   0.33,
+  centralChannelMaxFlank: 0.67,
+  leftHalfSpaceMinFlank:  0.17,
+  leftHalfSpaceMaxFlank:  0.40,
+  rightHalfSpaceMinFlank: 0.60,
+  rightHalfSpaceMaxFlank: 0.83,
+  defensiveThirdMaxAttack: 0.33,
+  middleThirdMaxAttack:    0.67,
+  attackingThirdMinAttack: 0.67,
+  inBehindMinAttack:       0.78,
+  zone14MinAttack:         0.78,
+  zone14MaxAttack:         0.92,
+  zone14MinFlank:          0.30,
+  zone14MaxFlank:          0.70,
+  wideAreaMinAttack:       0.67,
+  wideAreaLeftMaxFlank:    0.25,
+  wideAreaRightMinFlank:   0.75,
+} as const;
 
 // ── ZoneEntry — DictionaryEntry extended with geometry description ─────────────
 // geometryMapping.regions describes the zone in terms of the normalised
@@ -175,3 +204,75 @@ export const ZONE_ENTRIES: ZoneEntry[] = [
 ] satisfies ZoneEntry[];
 
 assertUniqueIds(ZONE_ENTRIES);
+
+// ── Runtime geometry: zoneAt ──────────────────────────────────────────────────
+
+/**
+ * Returns the ids of all zones in ZONE_ENTRIES that contain the canvas point (x, y),
+ * interpreted from the perspective of `attackingDirection`.
+ *
+ * Normalised axes (same convention as positionInference.ts computeAxes):
+ *   'up':   attackProgress = (590 - y) / 580;  flankPos = (x - 10) / 780
+ *   'down': attackProgress = (y - 10) / 580;   flankPos = (790 - x) / 780
+ *
+ * Half-spaces take priority over channel bands in the overlap region — a point
+ * that falls in both the left half-space and the left channel is only reported
+ * as being in the half-space (more specific tactical concept, per zones comment).
+ */
+export function zoneAt(
+  x: number,
+  y: number,
+  attackingDirection: 'up' | 'down',
+): string[] {
+  let ap: number; // attackProgress [0–1]
+  let fp: number; // flankPos [0–1]
+
+  if (attackingDirection === 'up') {
+    ap = (FIELD_Y_MAX - y) / FIELD_H;
+    fp = (x - FIELD_X_MIN) / FIELD_W;
+  } else {
+    ap = (y - FIELD_Y_MIN) / FIELD_H;
+    fp = (FIELD_X_MAX - x) / FIELD_W;
+  }
+
+  const T = ZONE_THRESHOLDS;
+  const ids: string[] = [];
+
+  // ── Horizontal thirds ──────────────────────────────────────────────────────
+  if (ap <= T.defensiveThirdMaxAttack) ids.push('zone.defensive_third');
+  else if (ap <= T.middleThirdMaxAttack) ids.push('zone.middle_third');
+  else ids.push('zone.attacking_third');
+
+  // ── Vertical channels (half-spaces take priority in their overlap range) ──
+  const inLeftHalfSpace  = fp >= T.leftHalfSpaceMinFlank  && fp <= T.leftHalfSpaceMaxFlank;
+  const inRightHalfSpace = fp >= T.rightHalfSpaceMinFlank && fp <= T.rightHalfSpaceMaxFlank;
+
+  if (inLeftHalfSpace) {
+    ids.push('zone.left_half_space');
+  } else if (inRightHalfSpace) {
+    ids.push('zone.right_half_space');
+  } else if (fp < T.leftChannelMaxFlank) {
+    ids.push('zone.left_channel');
+  } else if (fp > T.centralChannelMaxFlank) {
+    ids.push('zone.right_channel');
+  } else {
+    ids.push('zone.central_channel');
+  }
+
+  // ── Special zones (may add on top of third + channel) ──────────────────
+  if (ap >= T.inBehindMinAttack) ids.push('zone.in_behind');
+
+  if (
+    ap >= T.zone14MinAttack && ap <= T.zone14MaxAttack &&
+    fp >= T.zone14MinFlank  && fp <= T.zone14MaxFlank
+  ) {
+    ids.push('zone.zone_14');
+  }
+
+  if (ap >= T.wideAreaMinAttack) {
+    if (fp <= T.wideAreaLeftMaxFlank)  ids.push('zone.wide_area_left');
+    if (fp >= T.wideAreaRightMinFlank) ids.push('zone.wide_area_right');
+  }
+
+  return ids;
+}

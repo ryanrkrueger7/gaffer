@@ -337,6 +337,7 @@ export default function EditorPage() {
   const [playing, setPlaying] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
   const [narrateResult, setNarrateResult] = useState<NarrationResult | null>(null);
+  const [narrateDebug, setNarrateDebug] = useState(false);
   const [draggingApex, setDraggingApex] = useState<{ x: number; y: number } | null>(null);
 
   // ── Persistence state ──────────────────────────────────────────────────────
@@ -858,15 +859,9 @@ export default function EditorPage() {
 
     switch (tool) {
       case 'select': {
+        // Move only — inference runs at placement time (lastCreatedEntityId effect, line ~637),
+        // never at drag-end. Moving an already-placed marker never rewrites inferredPositionId.
         moveEntity(id, x, y);
-        // Re-infer position after drag — entity.team is on the doc entity, not snapshot.
-        const movedEntity = doc.entities.find((e) => e.id === id);
-        if (movedEntity?.kind === 'player') {
-          const scoringDir = buildFrameScoringDirection(doc.frame.teams);
-          const { position, confidence } = inferPosition(x, y, movedEntity.team ?? 'neutral', scoringDir);
-          updatePlayerDisplay(id, { inferredPositionId: position });
-          setInferenceConfidenceMap((prev) => { const next = new Map(prev); next.set(id, confidence); return next; });
-        }
         break;
       }
 
@@ -1413,13 +1408,24 @@ export default function EditorPage() {
 
         {/* Narration panel */}
         <div className="w-[800px]">
-          <button
-            onClick={() => setNarrateResult(narrate(doc))}
-            className="flex items-center gap-1 text-[11px] text-[#2d5a30] hover:text-[#4a7a4e] cursor-pointer"
-          >
-            <ChevronRight size={11} />
-            narrate
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setNarrateResult(narrate(doc, { debug: narrateDebug }))}
+              className="flex items-center gap-1 text-[11px] text-[#2d5a30] hover:text-[#4a7a4e] cursor-pointer"
+            >
+              <ChevronRight size={11} />
+              narrate
+            </button>
+            <label className="flex items-center gap-1 text-[10px] text-[#2d5a30] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={narrateDebug}
+                onChange={e => setNarrateDebug(e.target.checked)}
+                className="accent-[#2d5a30] w-3 h-3"
+              />
+              debug
+            </label>
+          </div>
           {narrateResult && (
             <div className="mt-1 bg-[#0b1a0d] border border-[#1e3a20] rounded p-3">
               {narrateResult.clauses.length === 0 ? (

@@ -1,15 +1,17 @@
 // Gaffer narration head — §6.1 with register, disambiguation, reception model,
-// carries (Scope A), and shots (Scope B).
+// carries (Scope A), shots (Scope B), and run-term integration (Phase 1C).
 //
 // Pure function — no React, no Zustand, no fetch, no side effects.
 // Imports: lib/engine (possession authority) + lib/knowledge (dictionary).
 // lib/engine and lib/knowledge must NEVER import from lib/intelligence.
 
-import type { GafferDocument, PassAction, CarryAction, PlayerEntity } from '../engine/types';
+import type { GafferDocument, PassAction, CarryAction, RunAction, PlayerEntity } from '../engine/types';
 import { resolvePosition } from '../engine/resolve';
 import { ROLE_ENTRIES, roleToLine } from '../knowledge/roles';
 import { classifyPassDirection, classifyReception, classifyCarryLateral } from '../knowledge/passDirection';
 import type { PassDirection, ReceptionClassification } from '../knowledge/passDirection';
+import { matchSignatures } from '../knowledge/signatures/index';
+import type { MatchedTerm } from '../knowledge/signatures/matcher';
 import type { NarrationClause, NarrationResult, CorrectionEvent } from './types';
 
 // ── Public option types ────────────────────────────────────────────────────────
@@ -22,6 +24,12 @@ export interface NarrationOptions {
    * Default: 'name'
    */
   register?: 'name' | 'number';
+  /**
+   * FIX 0: When true, per-predicate pass/fail diagnostics from the signature
+   * matcher are appended to NarrationResult.notes. Toggle the debug checkbox
+   * in the narration panel to activate.
+   */
+  debug?: boolean;
 }
 
 // ── Role label resolution ──────────────────────────────────────────────────────
@@ -51,10 +59,6 @@ function getLabelForPlayer(
 
 // ── Duplicate-label disambiguation ────────────────────────────────────────────
 
-/**
- * Build a final label map, qualifying colliding labels by flank.
- * Only players appearing in the ball story are considered.
- */
 function buildFinalLabels(
   players: Map<string, PlayerEntity>,
   rawLabels: Map<string, { label: string; termId: string | null }>,
@@ -75,8 +79,6 @@ function buildFinalLabels(
       return;
     }
 
-    // Collision: qualify by flank.
-    // lower x = left for 'up'/'right' attacking; lower x = right for 'down'/'left'.
     const teamId    = players.get(ids[0])?.team;
     const attackDir = attackDirOf(teamId);
     const invertX   = attackDir === 'down' || attackDir === 'left';
@@ -114,24 +116,29 @@ function verbFor(reception: ReceptionClassification, outgoingDir: PassDirection)
 // ── Main narration function ───────────────────────────────────────────────────
 
 /**
- * Narrate a document's ball events as connected possession clauses.
+ * Narrate a document's ball events and matched run terms as connected clauses.
  *
- * Handles: player-to-player passes, carries (Scope A), shots to goal/mini-goal (Scope B).
- * Applies: register consistency (FIX 1), duplicate-label disambiguation (FIX 2),
- * and the reception-orientation model (FIX 4).
- *
- * Never throws — degradation messages appear in result.notes.
+ * Phase 1C additions:
+ *   - Run beats: matched run terms emit a clause at their temporal position.
+ *     Unmatched runs are silent.
+ *   - ACT_LAYOFF_UNDERNEATH: when matched on a pass, its phrase replaces verbFor().
+ *     This prevents "lays it off / lays it off underneath" doubling — the
+ *     reception-classification verb is skipped entirely when the term fires,
+ *     and the signature phrase is used in its place.
+ *   - Lifecycle continuation: when a matched run term resolves to a later pass
+ *     that delivers the ball to the runner, the receiving clause text becomes
+ *     "${receiver}, continuing his run, receives from ${passer}" and references
+ *     the run term's id. If ACT_LAYOFF_UNDERNEATH also fires on that pass, the
+ *     combined clause is "${passer} lays it off underneath to ${receiver},
+ *     continuing his run."
  */
 export function narrate(doc: GafferDocument, opts?: NarrationOptions): NarrationResult {
   const register = opts?.register ?? 'name';
+  const debug    = opts?.debug ?? false;
   const notes: string[] = [];
   const clauses: NarrationClause[] = [];
 
-  // ── 0. Integrity check — defensive deduplication of action IDs ───────────
-  // Action IDs come from crypto.randomUUID() and cannot collide at creation.
-  // If duplicates appear in the document (e.g. corrupted persisted state),
-  // React key collisions in the narration list UI produce concatenated text.
-  // Deduplicate here; first occurrence wins.
+  // ── 0. Integrity check — deduplicate action IDs ───────────────────────────
   const seenActionIds = new Set<string>();
   const dedupedActions: typeof doc.actions = [];
   for (const a of doc.actions) {
@@ -143,15 +150,44 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
     }
   }
 
-  // ── 1. Walk timeline and collect ball story items ─────────────────────────
+  // ── 1. Run the signature matcher ──────────────────────────────────────────
+  const debugNotes: string[] = [];
+  const matchedTerms = matchSignatures(
+    { ...doc, actions: dedupedActions },
+    doc.frame,
+    doc.beats,
+    debug ? debugNotes : undefined,
+  );
+  if (debug && debugNotes.length > 0) {
+    notes.push('── matcher debug ──');
+    notes.push(...debugNotes);
+  }
+
+  // Index matched terms by action id for fast lookup.
+  const termsByActionId = new Map<string, MatchedTerm>();
+  for (const mt of matchedTerms) {
+    termsByActionId.set(mt.actionId, mt);
+  }
+
+  // Build a reverse index: passActionId → run MatchedTerm (lifecycle resolution).
+  // When a pass resolves a run term, the receiving clause is modified.
+  const resolvedRunAtPass = new Map<string, MatchedTerm>();
+  for (const mt of matchedTerms) {
+    if (mt.resolution !== 'unresolved') {
+      resolvedRunAtPass.set(mt.resolution.receivingPassActionId, mt);
+    }
+  }
+
+  // ── 2. Walk timeline and collect story items ──────────────────────────────
 
   type PassItem  = { type: 'pass';  action: PassAction;  receiver: PlayerEntity; targetEntityId: string };
   type ShotItem  = { type: 'shot';  action: PassAction;  passer: PlayerEntity };
   type CarryItem = { type: 'carry'; action: CarryAction; carrier: PlayerEntity };
-  type BallItem  = PassItem | ShotItem | CarryItem;
+  type RunItem   = { type: 'run';   action: RunAction;   runner: PlayerEntity;   term: MatchedTerm };
+  type StoryItem = PassItem | ShotItem | CarryItem | RunItem;
 
   const sortedActions = dedupedActions.sort((a, b) => a.start - b.start);
-  const ballStory: BallItem[] = [];
+  const story: StoryItem[] = [];
 
   for (const action of sortedActions) {
     if (action.kind === 'pass') {
@@ -168,15 +204,14 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
         continue;
       }
 
-      // SCOPE B — shot: pass directed at a goal or mini-goal entity
       if (targetEntity.kind === 'goal' || targetEntity.kind === 'minigoal') {
         const passer = doc.entities.find(
           (e): e is PlayerEntity => e.id === action.entityId && e.kind === 'player',
         );
         if (passer) {
-          ballStory.push({ type: 'shot', action, passer });
+          story.push({ type: 'shot', action, passer });
         } else {
-          notes.push(`Pass ${action.id}: passer ${action.entityId} not found for shot — skipped.`);
+          notes.push(`Pass ${action.id}: passer not found for shot — skipped.`);
         }
         continue;
       }
@@ -186,7 +221,7 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
         continue;
       }
 
-      ballStory.push({
+      story.push({
         type: 'pass',
         action,
         receiver: targetEntity as PlayerEntity,
@@ -194,27 +229,37 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
       });
 
     } else if (action.kind === 'carry') {
-      // SCOPE A — carry beat
       const carrier = doc.entities.find(
         (e): e is PlayerEntity => e.id === action.entityId && e.kind === 'player',
       );
       if (carrier) {
-        ballStory.push({ type: 'carry', action, carrier });
+        story.push({ type: 'carry', action, carrier });
+      }
+
+    } else if (action.kind === 'run') {
+      // Only include runs that matched a signature term.
+      const mt = termsByActionId.get(action.id);
+      if (!mt) continue; // unmatched runs are silent
+
+      const runner = doc.entities.find(
+        (e): e is PlayerEntity => e.id === action.entityId && e.kind === 'player',
+      );
+      if (runner) {
+        story.push({ type: 'run', action, runner, term: mt });
       }
     }
-    // run, mark, hold — skip silently
+    // mark, hold — skip silently
   }
 
-  if (ballStory.length === 0) {
-    notes.push('No ball events found in this document.');
+  if (story.length === 0) {
+    notes.push('No narrable events found in this document.');
     return { clauses, ok: false, notes };
   }
 
-  // ── 2. Build label maps (raw + collision-disambiguated) ───────────────────
+  // ── 3. Build label maps ───────────────────────────────────────────────────
 
   const allPlayers = new Map<string, PlayerEntity>();
-
-  for (const item of ballStory) {
+  for (const item of story) {
     if (item.type === 'pass') {
       const passer = doc.entities.find(
         (e): e is PlayerEntity => e.id === item.action.entityId && e.kind === 'player',
@@ -225,6 +270,8 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
       allPlayers.set(item.passer.id, item.passer);
     } else if (item.type === 'carry') {
       allPlayers.set(item.carrier.id, item.carrier);
+    } else if (item.type === 'run') {
+      allPlayers.set(item.runner.id, item.runner);
     }
   }
 
@@ -245,25 +292,39 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
   const termIdOf = (id: string): string | null =>
     rawLabels.get(id)?.termId ?? null;
 
-  // ── 3. Emit one clause per ball story item ────────────────────────────────
+  // ── 4. Emit clauses ───────────────────────────────────────────────────────
 
-  // Reception model: tracks the last pass direction arriving to each player.
-  // A carry resets the carrier's entry (they reorient themselves).
   const lastIncomingDir = new Map<string, PassDirection>();
-
   let clauseIndex = 0;
 
-  for (const item of ballStory) {
+  for (const item of story) {
+
+    // ── RUN ──────────────────────────────────────────────────────────────────
+    if (item.type === 'run') {
+      const { action, runner, term } = item;
+
+      const termIds: string[] = [term.termId, ...term.subsumedTermIds];
+      const rtId = termIdOf(runner.id);
+      if (rtId) termIds.push(rtId);
+
+      clauses.push({
+        text: `${labelOf(runner.id)} ${term.phrase.primary}`,
+        beatIndex: clauseIndex,
+        actionId: action.id,
+        termIds,
+        entityIds: [runner.id],
+      });
+      clauseIndex++;
 
     // ── PASS ─────────────────────────────────────────────────────────────────
-    if (item.type === 'pass') {
+    } else if (item.type === 'pass') {
       const { action, targetEntityId } = item;
 
       const passer = doc.entities.find(
         (e): e is PlayerEntity => e.id === action.entityId && e.kind === 'player',
       );
       if (!passer) {
-        notes.push(`Pass ${action.id}: passer ${action.entityId} not found — skipped.`);
+        notes.push(`Pass ${action.id}: passer not found — skipped.`);
         continue;
       }
 
@@ -277,33 +338,72 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
         atkDir,
       );
 
-      // Select verb using reception model; first ball event always uses "plays".
-      let verb: string;
-      let receptionKind: ReceptionClassification | null = null;
+      // Check if ACT_LAYOFF_UNDERNEATH fires on this pass.
+      const layoffTerm = termsByActionId.get(action.id);
+      const isLayoff = layoffTerm?.termId === 'act.layoff_underneath';
 
-      const incomingDir = lastIncomingDir.get(action.entityId);
-      if (clauseIndex === 0 || !incomingDir) {
-        verb = 'plays';
-      } else {
-        const posId = passer.display?.positionId ?? passer.display?.inferredPositionId;
-        const line  = posId ? roleToLine(posId) : 'unknown';
-        receptionKind = classifyReception(incomingDir, outgoingDir, line);
-        verb = verbFor(receptionKind, outgoingDir);
-      }
+      // Check if a run term resolves at this pass (lifecycle continuation).
+      const resolvedRun = resolvedRunAtPass.get(action.id);
 
-      // Record outgoing direction so the receiver's next pass can apply reception model.
-      lastIncomingDir.set(targetEntityId, outgoingDir);
-
+      let text: string;
       const termIds: string[] = [];
       const ptId = termIdOf(action.entityId);
       const rtId = termIdOf(targetEntityId);
       if (ptId) termIds.push(ptId);
       if (rtId) termIds.push(rtId);
       termIds.push(`direction.${outgoingDir}`);
-      if (receptionKind) termIds.push(`reception.${receptionKind}`);
+
+      // FIX 3: "continuing his run" only for spatial movement terms (overlap / run in behind).
+      // MOV_CHECK_TO_BALL resolutions narrate plainly — no continuation phrase.
+      const usesContinuation = resolvedRun?.termId === 'mov.overlap' || resolvedRun?.termId === 'mov.run_in_behind';
+
+      if (resolvedRun && isLayoff) {
+        // FIX 4: combined lifecycle + layoff — receiver-first so "continuing his run"
+        // names the correct player (the receiver/runner, not the passer).
+        text = usesContinuation
+          ? `${labelOf(targetEntityId)}, continuing his run, receives the layoff from ${labelOf(action.entityId)}`
+          : `${labelOf(targetEntityId)} receives the layoff from ${labelOf(action.entityId)}`;
+        termIds.push(layoffTerm!.termId, ...layoffTerm!.subsumedTermIds);
+        termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
+
+      } else if (resolvedRun) {
+        // Lifecycle continuation only — receiver-first per spec.
+        text = usesContinuation
+          ? `${labelOf(targetEntityId)}, continuing his run, receives from ${labelOf(action.entityId)}`
+          : `${labelOf(targetEntityId)} receives from ${labelOf(action.entityId)}`;
+        termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
+
+      } else if (isLayoff) {
+        // ACT_LAYOFF_UNDERNEATH replaces the reception verb to avoid doubling.
+        // Normal verbFor would return "lays it off to" / "bounces it back to";
+        // we use the signature phrase "lays it off underneath to" instead.
+        const phrase = layoffTerm!.phrase.primary;
+        text = `${labelOf(action.entityId)} ${phrase} ${labelOf(targetEntityId)}`;
+        termIds.push(layoffTerm!.termId, ...layoffTerm!.subsumedTermIds);
+
+      } else {
+        // Standard reception-model clause.
+        let verb: string;
+        let receptionKind: ReceptionClassification | null = null;
+
+        const incomingDir = lastIncomingDir.get(action.entityId);
+        if (clauseIndex === 0 || !incomingDir) {
+          verb = 'plays';
+        } else {
+          const posId = passer.display?.positionId ?? passer.display?.inferredPositionId;
+          const line  = posId ? roleToLine(posId) : 'unknown';
+          receptionKind = classifyReception(incomingDir, outgoingDir, line);
+          verb = verbFor(receptionKind, outgoingDir);
+        }
+
+        if (receptionKind) termIds.push(`reception.${receptionKind}`);
+        text = `${labelOf(action.entityId)} ${verb} ${labelOf(targetEntityId)}`;
+      }
+
+      lastIncomingDir.set(targetEntityId, outgoingDir);
 
       clauses.push({
-        text: `${labelOf(action.entityId)} ${verb} ${labelOf(targetEntityId)}`,
+        text,
         beatIndex: clauseIndex,
         actionId: action.id,
         termIds,
@@ -329,16 +429,12 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
       });
       clauseIndex++;
 
-      // Possession ends after a shot — clear reception tracking.
       lastIncomingDir.clear();
 
     // ── CARRY (Scope A) ───────────────────────────────────────────────────────
     } else if (item.type === 'carry') {
       const { action, carrier } = item;
 
-      // Two independent direction components:
-      //   axialWord  — forward / back (attack axis); omitted when square
-      //   lateralWord — wide / infield / across (touchline axis); omitted when null
       let axialWord:   string | null = null;
       let lateralWord: string | null = null;
       let axialTermId:   string | null = null;
@@ -355,13 +451,11 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
         );
         if (axialDir === 'forward') { axialWord = 'forward'; axialTermId = 'direction.forward'; }
         else if (axialDir === 'backward') { axialWord = 'back'; axialTermId = 'direction.backward'; }
-        // 'square' axial → no axial word
 
         const lateral = classifyCarryLateral(carrierPos.x, action.destination.x);
         if (lateral) { lateralWord = lateral; lateralTermId = `lateral.${lateral}`; }
       }
 
-      // Compose direction suffix: "forward and wide", "infield", "across", "back", etc.
       let dirSuffix: string;
       if (axialWord && lateralWord) dirSuffix = ` ${axialWord} and ${lateralWord}`;
       else if (axialWord)           dirSuffix = ` ${axialWord}`;
@@ -384,7 +478,6 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
       });
       clauseIndex++;
 
-      // Carry resets the carrier's orientation — next pass uses "plays" not a turn/layoff.
       lastIncomingDir.delete(carrier.id);
     }
   }
@@ -394,10 +487,6 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
 
 // ── Correction hook (§6.3 seam) ───────────────────────────────────────────────
 
-/**
- * Log a coach correction against a narration clause.
- * The signature is the §6.3 contract; wiring a correction store comes later.
- */
 export function logCorrection(event: CorrectionEvent): void {
   // eslint-disable-next-line no-console
   console.debug('[intelligence] correction', event);

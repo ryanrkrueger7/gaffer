@@ -422,11 +422,20 @@ export const useEditorStore = create<EditorStore>((set) => ({
 
   addPass: (targetId) =>
     set((state) => {
-      // Relational timing rule: if the target has an existing Run, align pass to it
-      // so the ball arrives exactly when the runner reaches their destination.
-      const targetRun = state.document.actions.find(
+      // Relational timing rule: if the target has existing Run(s), align pass to the
+      // most recently authored one (last in array order) so the ball arrives when the
+      // runner reaches their destination.
+      //
+      // Using .find() (first match) would bind to run A when the player has runs A and B,
+      // causing the ball to arrive at T=runA.end while run B is active — run B then plays
+      // back with the ball bound to the player, indistinguishable from a carry.
+      // The correct binding is always to the last-authored run (highest array index).
+      const allTargetRuns = state.document.actions.filter(
         (a) => a.kind === 'run' && a.entityId === targetId,
       );
+      const targetRun = allTargetRuns.length > 0
+        ? allTargetRuns[allTargetRuns.length - 1]
+        : undefined;
       const startT = targetRun ? targetRun.start : maxActionEnd(state.document);
       const duration = targetRun ? targetRun.duration : 0.8;
 
