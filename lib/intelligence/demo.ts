@@ -186,7 +186,9 @@ console.log('\n─────────────────────�
 // Scene A — check + layoff
 // CB→LB pass; LM runs closing (check); LB→LM pass; CM runs closing underneath;
 // LM→CM backward pass (layoff).
-// Expect: check-to-ball clause for LM, check-to-ball clause for CM,
+// Expect: check-to-ball clause for LM, third-man-run clause for CM
+//         (CB→LB pass is in-flight at CM run start t=0.9, so CM fires MOV_THIRD_MAN_RUN
+//         specificity 15 rather than MOV_CHECK_TO_BALL specificity 10),
 //         layoff phrase on the LM→CM clause (+ lifecycle continuation for CM).
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout (team A attacks 'up', goal at y=10):
@@ -247,9 +249,11 @@ console.log('\n─────────────────────�
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Scene B — the coach's overlap
-// LB has ball; LM checks (run closing); LB→LM pass; LB runs outside path
+// LB has ball; LM drops in (run away from goal); LB→LM pass; LB runs outside path
 // around LM, ending beyond; LM→LB pass into the run.
-// Expect: LM check-to-ball clause, "the left back overlaps" clause,
+// Expect: LM drop-in clause (MOV_DROP_IN specificity 12 wins; LM run is away from goal),
+//         standard "plays" clause for LB→LM (drop-in skips lifecycle),
+//         "the left back overlaps" clause,
 //         lifecycle receiving clause for the LM→LB pass.
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout (team A attacks 'up', goal at y=10):
@@ -359,12 +363,11 @@ console.log('\n═════════════════════�
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Verification scene (a) — coach overlap
-// Same geometry as Scene B (the overlap). Expected after FIX 4:
-//   1. the left midfielder checks to ball
-//   2. the left midfielder, continuing his run, receives from the left back
+// Same geometry as Scene B (the overlap). Expected:
+//   1. the left midfielder drops in   ← MOV_DROP_IN fires (run is away from goal)
+//   2. the left back plays the left midfielder  ← standard pass (drop-in skips lifecycle)
 //   3. the left back overlaps
 //   4. the left back, continuing his run, receives from the left midfielder
-// Note: "the left midfielder, continuing his run" comes BEFORE the source name (FIX 4 ✓)
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const beat = makeBeat({ order: 0 });
@@ -425,9 +428,9 @@ console.log('\n═════════════════════�
 //
 // Expected output:
 //   1. the left winger runs in behind
-//   2. the attacking midfielder checks to ball
+//   2. the attacking midfielder makes a third-man run   ← MOV_THIRD_MAN_RUN (CM→ST in-flight at AM run start)
 //   3. the central midfielder plays the striker         ← first pass, no reception context
-//   4. the attacking midfielder, continuing his run, receives the layoff from the striker  ← FIX 4 ✓
+//   4. the attacking midfielder, continuing his run, receives the layoff from the striker
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const beat = makeBeat({ order: 0 });
@@ -732,8 +735,10 @@ console.log('\n═════════════════════�
 //
 // Expected output:
 //   1. the center back plays the central midfielder
-//   2. the central midfielder plays the left midfielder
-//   LM run: SILENT ← all 4 relational predicates pass; proximity gate blocks at minDist≈306px
+//   2. the central midfielder plays through to the left midfielder
+//   LM run: SILENT (MOV_OVERLAP: proximity gate blocks at minDist≈306px; MOV_RUN_IN_BEHIND:
+//     LM not beyond furthest teammate; MOV_CHECK_TO_BALL: silenced — run is toward-goal not closing)
+//   ACT_THROUGH_BALL fires on CM→LM: receiver has active toward-goal run + beyond furthest teammate ✓
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const beat = makeBeat({ order: 0 });
@@ -821,4 +826,464 @@ console.log('\n═════════════════════�
 
   // debug: true — to see proximity minDist in OVERLAP trigger[5] note.
   printResult('Scene H — real overlap, proximity passes (FIX 3)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene I — MOV_UNDERLAP
+// LM starts behind CM (y=420 > y=350) and makes a run to the CENTRAL/INSIDE side
+// of CM (runner x increases toward center, pathSide='inside'), ending level/beyond.
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   CB  (400, 490)  — center back, starts with ball
+//   CM  (200, 350)  — left-center midfielder, left of center (nearerTouchline=x=10)
+//   LM  (250, 420)  — left midfielder — RIGHT of CM (central side of CM = inside)
+//
+// pathSide 'inside' check:
+//   CM x=200, nearerTouchline=10, tmDistToTouchline=190
+//   LM mid x=(250+280)/2=265. distToTouchline=|265-10|=255. 255>190 → NOT outside → inside ✓
+//
+// Timeline:
+//   t=0.0 d=0.8: CB→CM pass (CM has ball at t=0.8)
+//   t=0.8 d=1.0: LM run (250,420)→(280,200) concurrent with CM→LM pass (run-meets-pass)
+//   t=0.8 d=1.0: CM→LM pass delivers into LM's run
+//
+// Underlap geometry (carrier = CM via in-flight-passer):
+//   startsBehind: LM y=420 > CM y=350 → behind ✓
+//   pathSide: mid x=265, CM x=200, nearerTouchline=10;
+//             distRunner=255 > distCM=190 → inside ✓
+//   endsLevelOrBeyond: LM end y=200 ≤ CM y=350 → beyond ✓
+//   proximity: dist at start √((250-200)²+(420-350)²)≈86px ≤ 250px ✓
+//
+// Expected clauses:
+//   1. the center back plays the central midfielder
+//   2. the left midfielder underlaps
+//   3. the left midfielder, continuing his run, receives from the central midfielder
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene I — underlap' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const cb   = makePlayer({ team: 'A', initial: { x: 400, y: 490 }, display: { positionId: 'CB' } });
+  const cm   = makePlayer({ team: 'A', initial: { x: 200, y: 350 }, display: { positionId: 'CM' } });
+  // LM is to the RIGHT (central side) of CM — makes the run more central = inside
+  const lm   = makePlayer({ team: 'A', initial: { x: 250, y: 420 }, display: { positionId: 'LM' } });
+  const ball = makeBall({ initial: { x: 400, y: 490 } });
+
+  doc.entities.push(cb, cm, lm, ball);
+
+  const p1    = makePass({ entityId: cb.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.0, duration: 0.8 });
+  // LM cuts inside (central side of CM), concurrent with CM→LM pass.
+  const lmRun = makeRun({ entityId: lm.id, beatId: beat.id, destination: { x: 280, y: 200 }, start: 0.8, duration: 1.0 });
+  const p2    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lm.id }, start: 0.8, duration: 1.0 });
+
+  doc.actions.push(p1, lmRun, p2);
+
+  printResult('Scene I — underlap (MOV_UNDERLAP)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene J — MOV_THIRD_MAN_RUN
+// CB→LM pass (A→B) is in flight while AM (P = third man) starts a run.
+// AM is neither A nor B. LM then delivers to AM (B→P), resolving the lifecycle.
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   CB  (400, 490)  — center back (A), starts with ball
+//   LM  (150, 360)  — left midfielder (B), receives from CB
+//   AM  (300, 280)  — attacking midfielder (P), the third man
+//
+// Timeline:
+//   t=0.0 d=0.8: CB→LM pass (A→B, in-flight [0.0, 0.8])
+//   t=0.2 d=1.0: AM run (300,280)→(250,160) — starts DURING CB→LM in-flight ← third-man window
+//   t=0.8 d=0.6: LM→AM pass (B→P, delivers into AM's run)
+//
+// Third-man trigger checks:
+//   (b) CB→LM in-flight at t=0.2 ✓ (passer=CB ≠ AM, same team A)
+//   (c) AM ≠ CB (passer) ≠ LM (receiver) ✓ → isThirdMan=true
+//   (d) AM run: dist=√(50²+120²)≈130px ≥ 30px ✓
+//   silence(s1): LM next pass after t=0.2 is LM→AM (target=AM ≠ CB) → no bounce-back ✓
+//
+// Expected clauses:
+//   1. the center back plays the left midfielder
+//   2. the attacking midfielder makes a third-man run
+//   3. the attacking midfielder, continuing his run, receives from the left midfielder
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene J — third-man run' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const cb   = makePlayer({ team: 'A', initial: { x: 400, y: 490 }, display: { positionId: 'CB'  } });
+  const lm   = makePlayer({ team: 'A', initial: { x: 150, y: 360 }, display: { positionId: 'LM'  } });
+  const am   = makePlayer({ team: 'A', initial: { x: 300, y: 280 }, display: { positionId: 'CAM' } });
+  const ball = makeBall({ initial: { x: 400, y: 490 } });
+
+  doc.entities.push(cb, lm, am, ball);
+
+  const p1    = makePass({ entityId: cb.id, beatId: beat.id, target: { entityId: lm.id }, start: 0.0, duration: 0.8 });
+  // AM starts running while CB→LM is still in flight (t=0.2 < 0.8 = pass end)
+  const amRun = makeRun({ entityId: am.id, beatId: beat.id, destination: { x: 250, y: 160 }, start: 0.2, duration: 1.0 });
+  // LM delivers to AM — the third-man lifecycle resolution
+  const p2    = makePass({ entityId: lm.id, beatId: beat.id, target: { entityId: am.id }, start: 0.8, duration: 0.6 });
+
+  doc.actions.push(p1, amRun, p2);
+
+  printResult('Scene J — third-man run (MOV_THIRD_MAN_RUN)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene K — ACT_ONE_TWO
+// LB plays to CM (A→B), LB immediately advances forward, CM returns immediately (B→A).
+// ACT_ONE_TWO fires on the return pass (CM→LB).
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   LB  (150, 420)  — left back (A), starts with ball
+//   CM  (250, 350)  — central midfielder (B)
+//
+// Timeline:
+//   t=0.0 d=0.5: LB→CM pass (A→B). Ends t=0.5.
+//   t=0.5 d=0.6: LB run (150,420)→(160,340) — LB advances after playing (y: 420→340)
+//   t=0.5 d=0.4: CM→LB pass (B→A return). Ends t=0.9.
+//
+// One-two trigger checks (on CM→LB pass):
+//   A = LB (target), B = CM (passer of return)
+//   (b) first-leg: LB→CM ended at t=0.5, return starts at t=0.5; gap=0.0 ≤ 4.0s ✓
+//   (c) B's control window: 0.5 - 0.5 = 0.0s ≤ 1.5s ✓
+//   (d) LB advance: pos0 at firstLeg.start=0.0: (150,420). pos1 at returnEnd=0.9:
+//       LB run [0.5,1.1], at t=0.9: u=(0.9-0.5)/0.6=0.67; y=420-0.67*80≈366.
+//       advance = 420-366 = 54px ≥ 20px ✓
+//
+// Expected clauses:
+//   1. the left back plays the central midfielder
+//   2. the left back runs  (run clause, since the run fires — but wait, what term fires?)
+//      Actually: LB run goes from y=420 to y=340 → runVector: dy=-80 → fc=1.0 → 'toward-goal'.
+//      beyondFurthestTeammate at t=0.5: CM y=350 < LB y=420 → LB NOT beyond CM (CM is closer to goal). False.
+//      So MOV_RUN_IN_BEHIND fails. CHECK_TO_BALL: LB run → runVector=toward-goal → silenced.
+//      DROP_IN: runVector=toward-goal ≠ away → fails. OVERLAP: no carrier (no pass to LB in flight at t=0.5).
+//      Actually wait — CM→LB IS in flight at t=0.5 (it starts at t=0.5), but the run also starts at t=0.5.
+//      resolveOverlapCarrier would find CM as in-flight-passer. But startsBehind: LB y=420 > CM y=350 → behind ✓.
+//      pathSide: LB mid x=155, CM x=250, nearerTouchline x=10; |155-10|=145 < |250-10|=240 → outside ✓.
+//      endsLevelOrBeyond: LB end y=340 ≤ CM y=350 → beyond ✓.
+//      proximity: dist at start = √((150-250)²+(420-350)²)=√(10000+4900)≈122px ≤ 250px ✓.
+//      So MOV_OVERLAP WOULD fire on LB's run! That means we get an overlap clause too.
+//
+// Hmm, this is a problem. To avoid the overlap, I need to ensure the overlap conditions fail.
+// Let me redesign so LB runs to the OTHER side of CM (inside run) or fails proximity/startsBehind.
+// Easiest fix: make LB's run destination go to x=350 (same x as CM or inside it), making pathSide='inside'
+// or 'neither', so overlap fails but underlap or nothing fires.
+//
+// Actually: if I put CM at x=350 (right of center, nearerTouchline=x=790):
+//   LB runs from (150,420) to (160,340).
+//   pathSide: mid x=155. CM x=350. nearerTouchline=790. |155-790|=635 < |350-790|=440 → 635 > 440 → inside.
+//   Wait: |155-790|=635, |350-790|=440. 635 < 440? No, 635 > 440 → NOT outside → inside.
+//   And underlap: pathSide=inside ✓. But startsBehind: LB y=420 > CM y=350 → behind ✓.
+//   endsLevelOrBeyond: LB end y=340 ≤ CM y=350 → beyond ✓.
+//   proximity: √((155-350)²+(380-350)²)≈√(38025+900)≈197px ≤ 250px → MOV_UNDERLAP fires!
+//
+// Even more problems. The simplest approach: make LB run AFTER the one-two return is complete
+// (so no in-flight pass context), and make the run go sideways (lateral), so no overlap/underlap.
+// Or just ensure the run doesn't match overlap: if LB is to the right of CM (and CM is left of center),
+// the runner would be on the INSIDE. But we don't have an underlap claim if we use a unique design.
+//
+// Simplest redesign: no explicit run for LB. Just use a CB→LB hold sequence.
+// LB "advances" is checked by resolvePosition at the time the pass fires, not necessarily via a RunAction.
+// The one-two trigger (d) checks resolvePosition(aId, returnEnd) vs resolvePosition(aId, firstLeg.start).
+// If LB doesn't have a run, LB stays at initial.y throughout → advance = 0 → trigger fails.
+//
+// So I DO need LB to run. Let me use a run that's clearly not an overlap:
+// LB runs AWAY from goal first (to pick up the ball lower), then… no, that fails trigger (d).
+// Actually: have LB run forward (y decreasing) but make overlap fail via startsBehind.
+//
+// Key insight: if LB starts at y=420 and CM is at y=300 (CM is MORE advanced), then startsBehind=true
+// and overlap could still fire. Need CM to be more advanced than LB by less than LB's end position...
+// Actually if LB ends at y=340 and CM is at y=300, then endsLevelOrBeyond: 340 > 300 → NOT beyond → fails (c)!
+//
+// Let me set: CM at (250, 300). LB runs from (150,420) to (160,360).
+// endsLevelOrBeyond: LB end y=360 > CM y=300 → 360 ≤ 300? No → beyond=false → OVERLAP fails on (e)! ✓
+// advance: from y=420 to ~y=400 at returnEnd → advance=20px → borderline.
+//
+// Better: CM at (250, 280). LB runs to (160,340).
+// endsLevelOrBeyond: LB end y=340 > CM y=280 → beyond=false → OVERLAP fails ✓
+// advance: 420-340=80px ≥ 20px ✓
+// One-two fires on return, overlap does NOT fire on LB run.
+// LB run: runVector: dy=-80 → toward-goal. beyondFurthestTeammate at t=0.5: CM y=280 < LB y=420 → LB NOT beyond CM. False. ✓ RUN_IN_BEHIND fails.
+// DROP_IN: toward-goal run → (c) runVector='toward-goal' ≠ 'away' → fails ✓
+// CHECK_TO_BALL: toward-goal run → silenced ✓
+//
+// So with CM at y=280: NO run term fires on LB's run. OVERLAP fails at (e) because LB end y=340 > CM y=280.
+// But wait — what about ACT_THROUGH_BALL on the CM→LB return pass?
+// through-ball trigger (c): receiver (LB) has active toward-goal run at pass.start=0.5?
+// LB run [0.5, 1.1] starts at 0.5 (active AT pass.start). runVector='toward-goal'. Yes!
+// through-ball trigger (d): beyondFurthestTeammate(LB, passEnd=0.9, 'up')?
+// LB at t=0.9: ~y=396. CM at y=280. 280 < 396 → LB NOT beyond CM → beyondFurthestTeammate=false.
+// So through-ball fails (d) ✓.
+//
+// What about ACT_ONE_TWO vs ACT_THROUGH_BALL on the CM→LB return pass?
+// Both are pass terms. Through-ball fails (d). One-two fires. ✓ Clean.
+//
+// Expected output with CM at (250, 280), LB run (150,420)→(160,340):
+//   1. the left back plays the central midfielder   ← first pass LB→CM, no reception context
+//   2. the central midfielder plays a one-two with the left back   ← ACT_ONE_TWO on CM→LB return
+// (LB run is SILENT — no term fires on it)
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene K — one-two' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  // CM is at y=280 (more advanced than LB y=420). LB run ends at y=340 — NOT beyond CM (340 > 280),
+  // so MOV_OVERLAP fails on (e). ACT_ONE_TWO fires on the return pass.
+  const lb   = makePlayer({ team: 'A', initial: { x: 150, y: 420 }, display: { positionId: 'LB' } });
+  const cm   = makePlayer({ team: 'A', initial: { x: 250, y: 280 }, display: { positionId: 'CM' } });
+  const ball = makeBall({ initial: { x: 150, y: 420 } }); // LB has ball
+
+  doc.entities.push(lb, cm, ball);
+
+  // LB plays to CM, immediately advances; CM returns immediately.
+  const p1    = makePass({ entityId: lb.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.0, duration: 0.5 });
+  const lbRun = makeRun({ entityId: lb.id, beatId: beat.id, destination: { x: 160, y: 340 }, start: 0.5, duration: 0.6 });
+  // CM returns immediately — control window = 0.5 - 0.5 = 0.0s ≤ 1.5s ✓
+  const p2    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lb.id }, start: 0.5, duration: 0.4 });
+
+  doc.actions.push(p1, lbRun, p2);
+
+  printResult('Scene K — one-two (ACT_ONE_TWO)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene L — ACT_SWITCH_PLAY
+// CB plays a long diagonal pass from the left channel to the right channel,
+// switching the point of attack across the full width of the pitch.
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   CB  (150, 450)  — center back, starts with ball (left channel: x=150, fp≈0.18 ≤ 0.25)
+//   RB  (650, 400)  — right back, receives (right channel: x=650, fp≈0.82 ≥ 0.75)
+//
+// Switch trigger checks:
+//   (a) pass with player receiver ✓
+//   (b) length: √((650-150)²+(400-450)²)=√(250000+2500)≈502px ≥ 260px ✓
+//   (c) senderBand: fp=(150-10)/780≈0.18 ≤ 0.25 → 'left'
+//       receiverBand: fp=(650-10)/780≈0.82 ≥ 0.75 → 'right' → crosses ✓
+//
+// Expected clauses:
+//   1. the center back switches the play to the right back
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene L — switch play' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const cb   = makePlayer({ team: 'A', initial: { x: 150, y: 450 }, display: { positionId: 'CB' } });
+  const rb   = makePlayer({ team: 'A', initial: { x: 650, y: 400 }, display: { positionId: 'RB' } });
+  const ball = makeBall({ initial: { x: 150, y: 450 } }); // CB has ball
+
+  doc.entities.push(cb, rb, ball);
+
+  // CB switches the ball across the field to RB — long diagonal.
+  const p1 = makePass({ entityId: cb.id, beatId: beat.id, target: { entityId: rb.id }, start: 0.0, duration: 1.0 });
+
+  doc.actions.push(p1);
+
+  printResult('Scene L — switch play (ACT_SWITCH_PLAY)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene M — ACT_THROUGH_BALL + MOV_RUN_IN_BEHIND (composed)
+// ST runs in behind while CM plays a through ball into that run.
+// Both terms fire: MOV_RUN_IN_BEHIND on the run, ACT_THROUGH_BALL on the pass.
+// narrate.ts composes: run clause + "plays [receiver] through, continuing his run".
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   CM  (400, 320)  — central midfielder, has ball initially
+//   ST  (400, 200)  — striker, makes run in behind
+//
+// Timeline:
+//   t=0.0 d=1.0: ST run (400,200)→(380,60) — toward goal, toward box, in behind
+//   t=0.5 d=0.8: CM→ST pass (forward, delivers into ST's run)
+//
+// MOV_RUN_IN_BEHIND checks on ST run:
+//   (a) runVector: ST(400,200)→(380,60): dy=-140, fc≈0.98 → 'toward-goal' ✓
+//   (b) beyondFurthestTeammate at t=0.0: only ST and CM. CM y=320, ST y=200.
+//       For 'up': further from goal = higher y. CM y=320 > ST y=200 → CM is behind ST?
+//       Actually: for 'up' attacking direction, MORE advanced = LOWER y (closer to y=10).
+//       beyondFurthestTeammate: returns true if player is MORE advanced than ALL teammates.
+//       ST at y=200. CM at y=320. For 'up': tp.y <= pp.y → is CM y=320 ≤ ST y=200? No (320>200).
+//       So CM is NOT more advanced than ST → ST IS beyond furthest teammate ✓
+//   (c) towardBox: ST destination (380,60). x∈[250,550] ✓. y=60 ≤ 90 (TOP_BOX_Y_MAX) ✓
+//
+// ACT_THROUGH_BALL checks on CM→ST pass:
+//   (a) pass with player receiver ✓
+//   (b) passDirection: CM(400,320)→ST(400,200 at pass end? actually ST moves):
+//       at pass.end (t=1.3): ST at (400,200)+(0.8/1.0)*(380-400, 60-200)=(400-16, 200-112)=(384,88)
+//       classifyPassDirection(400,320, 384,88): dy=-232, dx=-16 → fc=232/232.6≈0.997 → 'forward' ✓
+//   (c) active toward-goal run at pass.start=0.5: ST run [0.0,1.0] active ✓. runVector='toward-goal' ✓
+//   (d) beyondFurthestTeammate(ST, passEnd=1.3): ST at t=1.3: (400,200)+(1.0/1.0)*(380-400,60-200)=(380,60).
+//       CM at t=1.3: (400,320) (no run). tp.y=320 ≤ pp.y=60? No → ST IS beyond ✓
+//
+// Expected clauses:
+//   1. the striker runs in behind
+//   2. the central midfielder plays the striker through, continuing his run
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene M — through ball (composed)' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const cm   = makePlayer({ team: 'A', initial: { x: 400, y: 320 }, display: { positionId: 'CM' } });
+  const st   = makePlayer({ team: 'A', initial: { x: 400, y: 200 }, display: { positionId: 'ST' } });
+  const ball = makeBall({ initial: { x: 400, y: 320 } }); // CM has ball
+
+  doc.entities.push(cm, st, ball);
+
+  const stRun = makeRun({ entityId: st.id, beatId: beat.id, destination: { x: 380, y: 60 }, start: 0.0, duration: 1.0 });
+  const p1    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: st.id }, start: 0.5, duration: 0.8 });
+
+  doc.actions.push(stRun, p1);
+
+  printResult('Scene M — through ball + run in behind (composed)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene N — MOV_DROP_IN
+// ST (forward line) drops away from goal into midfield space while CM has the ball.
+// Only the drop-in run fires; the CM→ST pass follows as a standard reception clause.
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   CM  (400, 320)  — central midfielder, has ball
+//   ST  (400, 180)  — striker, drops back into space
+//
+// ST run analysis:
+//   (a) run action ✓, attackDir='up' ✓
+//   (b) actorLine(ST): positionId='ST' → roleToLine('ST') → 'forward' ✓
+//   (c) runVector: ST(400,180)→(400,320): dy=+140, fc=-0.98 → 'away' ✓
+//   (d) deeperEnd: for 'up', endY=320 > startY=180 → deeper ✓
+//   (e) distanceToBallTrend: ST moves away from CM (ball at CM). d0=|180-320|=140. d1=|320-320|=0.
+//       wait — CM has ball, and after the pass is in flight…
+//       Actually the run is [0.0, 0.8] and the CM→ST pass is [0.5, 1.1]. Ball at CM until t=0.5.
+//       t0=0.0: ST at (400,180). Ball (owned by CM) at (400,288) (perimeter offset: ownedBallPos CM).
+//             d0=√(0²+(180-288)²)=108px.
+//       t1=0.8: ST at (400,320). Ball in-flight [0.5,1.1], ease(0.5)≈0.5: ball≈(400,204).
+//             d1=√(0²+(320-204)²)=116px. delta=+8px → 'flat' (FLAT_MARGIN_PX=10). → NOT 'closing' ✓
+//       So distanceToBallTrend ≠ 'closing' ✓
+//   (f) distance: √((400-400)²+(320-180)²)=140px ≥ 30px ✓
+//
+// Expected clauses:
+//   1. the striker drops in
+//   2. the central midfielder plays the striker   ← standard pass clause; CM→ST
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc = createEmptyDocument({ name: 'Scene N — drop-in' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const cm   = makePlayer({ team: 'A', initial: { x: 400, y: 320 }, display: { positionId: 'CM' } });
+  const st   = makePlayer({ team: 'A', initial: { x: 400, y: 180 }, display: { positionId: 'ST' } });
+  const ball = makeBall({ initial: { x: 400, y: 320 } }); // CM has ball
+
+  doc.entities.push(cm, st, ball);
+
+  // ST drops from y=180 to y=320 — away from goal, into midfield space.
+  const stRun = makeRun({ entityId: st.id, beatId: beat.id, destination: { x: 400, y: 320 }, start: 0.0, duration: 0.8 });
+  const p1    = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: st.id }, start: 0.5, duration: 0.6 });
+
+  doc.actions.push(stRun, p1);
+
+  printResult('Scene N — drop-in (MOV_DROP_IN)', narrate(doc, { register: 'name', debug: true }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene O — the coach's cross scene: one-two, carry, cross into the box, shot.
+//
+// "LM plays CM, one-two return, LM carries down the left line, ST runs into the
+//  box, LM's delivery meets him, ST shoots. NO underlap anywhere."
+//
+// Layout (team A attacks 'up', goal at y=10):
+//   LM  (100, 320)  — left midfielder, has ball
+//   CM  (300, 220)  — central midfielder, more advanced + central
+//   ST  (400, 200)  — striker
+//
+// ACT_ONE_TWO (fires on p2, the return CM→LM):
+//   B=CM, A=LM. first-leg A→B (p1) ends at 0.6 = p2.start → gap=0 ≤ ONE_TWO_TIME_WINDOW=4.0 ✓
+//   controlWindow = 0.0 ≤ 1.5s ✓
+//   A advance: LM at p1.start=(100,320); LM at p2.end=t=1.0=(100,280) (from lmFwdRun).
+//   advance = 320-280 = 40px ≥ ONE_TWO_ADVANCE_PX=20 ✓
+//
+// lmFwdRun (t=0.0, d=1.0): LM(100,320)→(100,280) — forward run during the one-two.
+//   runVector=toward-goal → MOV_CHECK_TO_BALL silenced (s1) ✓
+//   MOV_RUN_IN_BEHIND: beyondFurthestTeammate(LM, t=1.0)=false (ST y=200 < LM y=280) ✓
+//   → lmFwdRun is SILENT ✓
+//
+// Carry (t=1.0, d=1.5): LM(100,280)→(100,100) — LM runs the ball down the left line.
+//   "the left midfielder carries forward" ✓
+//
+// ACT_CROSS (fires on p3, LM→ST):
+//   (b) LM at (100,100): ap=(590-100)/580≈0.845 → attacking_third ✓;
+//       fp=(100-10)/780≈0.115 ≤ 0.25 → wide_area_left ✓
+//   (c) ST at p3.end=t=3.5: stRun (t=2.0,d=1.5) end=(400,60). x=400∈[250,550] ✓, y=60≤90 ✓
+//   (s1) passDir: LM(100,100)→ST(400,60): dx=300,dy=-40. fc=40/302≈0.13 → square (not backward) ✓
+//   Specificity 28 > ACT_THROUGH_BALL 25 (also fires: receiver has toward-goal run + beyond ✓)
+//
+// MOV_RUN_IN_BEHIND (fires on stRun):
+//   runVector=toward-goal ✓; beyondFurthestTeammate at p3.end=3.5:
+//   LM at (100,100), CM at (300,220). ST y=60 < LM y=100 < CM y=220 → ST is furthest ✓
+//   towardBox: (400,60) → x∈[250,550] ✓, y≤90 ✓
+//   → "the striker runs in behind"; lifecycle resolves to p3 (ACT_CROSS)
+//
+// MOV_UNDERLAP does NOT fire on stRun:
+//   proximity: runner ST(400,200), carrier LM(100,159) at t=2.0 → dist≈302px > 160px ✗
+//   box-end silence (s2): stRun ends at (400,60) — inside box ✗ (belt+suspenders)
+//
+// Narration (ACT_CROSS + lifecycle):
+//   isCross=true, resolvedRun=MOV_RUN_IN_BEHIND
+//   → "the striker meets the cross from the left midfielder" (not "continuing his run")
+//
+// Expected clauses:
+//   1. the left midfielder plays the central midfielder   ← p1 (standard, first clause)
+//   2. the central midfielder plays a one-two with the left midfielder  ← p2 + ACT_ONE_TWO
+//   3. the left midfielder carries forward                ← carry
+//   4. the striker runs in behind                        ← stRun + MOV_RUN_IN_BEHIND
+//   5. the striker meets the cross from the left midfielder  ← p3 + ACT_CROSS + lifecycle
+//   6. the striker shoots                                ← p4
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const beat = makeBeat({ order: 0 });
+  const doc  = createEmptyDocument({ name: 'Scene O — cross' });
+  doc.beats.push(beat);
+  doc.frame.teams = [{ id: 'A', color: '#FFD700', attackingDirection: 'up', directionSource: 'derived' }];
+
+  const lm   = makePlayer({ team: 'A', initial: { x: 100, y: 320 }, display: { positionId: 'LM'  } });
+  const cm   = makePlayer({ team: 'A', initial: { x: 300, y: 220 }, display: { positionId: 'CM'  } });
+  const st   = makePlayer({ team: 'A', initial: { x: 400, y: 200 }, display: { positionId: 'ST'  } });
+  const ball = makeBall({ initial: { x: 100, y: 320 } }); // LM has ball
+
+  doc.entities.push(lm, cm, st, ball);
+
+  // LM runs forward during the one-two exchange.
+  const lmFwdRun = makeRun({ entityId: lm.id, beatId: beat.id, destination: { x: 100, y: 280 }, start: 0.0, duration: 1.0 });
+  // First leg: LM→CM
+  const p1       = makePass({ entityId: lm.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.0, duration: 0.6 });
+  // Return: CM→LM (immediately; controlWindow=0) → ACT_ONE_TWO fires
+  const p2       = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lm.id }, start: 0.6, duration: 0.4 });
+  // LM carries down the left line to the byline area.
+  const carry    = makeCarry({ entityId: lm.id, beatId: beat.id, destination: { x: 100, y: 100 }, start: 1.0, duration: 1.5 });
+  // ST runs into the box.
+  const stRun    = makeRun({ entityId: st.id, beatId: beat.id, destination: { x: 400, y: 60  }, start: 2.0, duration: 1.5 });
+  // LM crosses from wide area — ACT_CROSS fires; ST in box at delivery.
+  const p3       = makePass({ entityId: lm.id, beatId: beat.id, target: { entityId: st.id }, start: 2.5, duration: 1.0 });
+
+  doc.actions.push(lmFwdRun, p1, p2, carry, stRun, p3);
+
+  const topGoal = doc.entities.find(e => e.kind === 'goal' && e.initial.y < 300);
+  if (topGoal) {
+    const shot = makePass({ entityId: st.id, beatId: beat.id, target: { entityId: topGoal.id }, start: 3.5, duration: 0.4 });
+    doc.actions.push(shot);
+  }
+
+  printResult('Scene O — cross (ACT_CROSS)', narrate(doc, { register: 'name', debug: true }));
 }

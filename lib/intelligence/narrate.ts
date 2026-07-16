@@ -338,9 +338,13 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
         atkDir,
       );
 
-      // Check if ACT_LAYOFF_UNDERNEATH fires on this pass.
-      const layoffTerm = termsByActionId.get(action.id);
-      const isLayoff = layoffTerm?.termId === 'act.layoff_underneath';
+      // Check if a signature term fires on this pass action.
+      const passTerm = termsByActionId.get(action.id);
+      const isLayoff      = passTerm?.termId === 'act.layoff_underneath';
+      const isSwitchPlay  = passTerm?.termId === 'act.switch_play';
+      const isOneTwo      = passTerm?.termId === 'act.one_two';
+      const isThroughBall = passTerm?.termId === 'act.through_ball';
+      const isCross       = passTerm?.termId === 'act.cross';
 
       // Check if a run term resolves at this pass (lifecycle continuation).
       const resolvedRun = resolvedRunAtPass.get(action.id);
@@ -353,33 +357,73 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
       if (rtId) termIds.push(rtId);
       termIds.push(`direction.${outgoingDir}`);
 
-      // FIX 3: "continuing his run" only for spatial movement terms (overlap / run in behind).
-      // MOV_CHECK_TO_BALL resolutions narrate plainly — no continuation phrase.
-      const usesContinuation = resolvedRun?.termId === 'mov.overlap' || resolvedRun?.termId === 'mov.run_in_behind';
+      // "continuing his run" only for spatial movement terms that imply the player is
+      // actively running into space. MOV_CHECK_TO_BALL resolves plainly.
+      const usesContinuation =
+        resolvedRun?.termId === 'mov.overlap' ||
+        resolvedRun?.termId === 'mov.run_in_behind' ||
+        resolvedRun?.termId === 'mov.underlap' ||
+        resolvedRun?.termId === 'mov.third_man_run';
 
-      if (resolvedRun && isLayoff) {
+      // Through-ball + lifecycle composition is applied only when the resolving run is
+      // 'mov.run_in_behind' or 'mov.third_man_run'. Overlap/underlap delivery passes use the
+      // plain lifecycle phrasing ("continuing his run, receives from") because the
+      // "plays through" verb conflicts with the spatial sense of going around a player.
+      const isThroughBallRun =
+        isThroughBall && resolvedRun != null &&
+        resolvedRun.termId !== 'mov.overlap' &&
+        resolvedRun.termId !== 'mov.underlap';
+
+      // Drop-in lifecycle: the run clause says "drops in"; the delivering pass should narrate
+      // normally ("plays") rather than "receives from" — the drop-in creates space to receive,
+      // not a continuation clause.
+      const skipLifecycle = resolvedRun?.termId === 'mov.drop_in';
+
+      if (isCross && resolvedRun) {
+        // Cross + lifecycle runner — "meets the cross" (NOT "continuing his run";
+        // that phrase is gated to overlap/underlap/in-behind patterns only).
+        text = `${labelOf(targetEntityId)} meets the cross from ${labelOf(action.entityId)}`;
+        termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
+        termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
+
+      } else if (isCross) {
+        // Cross with no matched lifecycle runner.
+        text = `${labelOf(action.entityId)} crosses to ${labelOf(targetEntityId)}`;
+        termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
+
+      } else if (isThroughBallRun) {
+        // Through ball into an active in-behind or third-man run — passer-first.
+        text = usesContinuation
+          ? `${labelOf(action.entityId)} plays ${labelOf(targetEntityId)} through, continuing his run`
+          : `${labelOf(action.entityId)} plays through to ${labelOf(targetEntityId)}`;
+        termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
+        termIds.push(resolvedRun!.termId, ...resolvedRun!.subsumedTermIds);
+
+      } else if (!skipLifecycle && resolvedRun && isLayoff) {
         // FIX 4: combined lifecycle + layoff — receiver-first so "continuing his run"
         // names the correct player (the receiver/runner, not the passer).
         text = usesContinuation
           ? `${labelOf(targetEntityId)}, continuing his run, receives the layoff from ${labelOf(action.entityId)}`
           : `${labelOf(targetEntityId)} receives the layoff from ${labelOf(action.entityId)}`;
-        termIds.push(layoffTerm!.termId, ...layoffTerm!.subsumedTermIds);
+        termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
         termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
 
-      } else if (resolvedRun) {
+      } else if (!skipLifecycle && resolvedRun) {
         // Lifecycle continuation only — receiver-first per spec.
         text = usesContinuation
           ? `${labelOf(targetEntityId)}, continuing his run, receives from ${labelOf(action.entityId)}`
           : `${labelOf(targetEntityId)} receives from ${labelOf(action.entityId)}`;
         termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
 
-      } else if (isLayoff) {
-        // ACT_LAYOFF_UNDERNEATH replaces the reception verb to avoid doubling.
-        // Normal verbFor would return "lays it off to" / "bounces it back to";
-        // we use the signature phrase "lays it off underneath to" instead.
-        const phrase = layoffTerm!.phrase.primary;
+      } else if (isLayoff || isSwitchPlay || isOneTwo || isThroughBall) {
+        // Pass term replaces the verb entirely. (Cross branches are handled above.)
+        // One-two:    "${B} plays a one-two with ${A}"
+        // Switch:     "${passer} switches the play to ${receiver}"
+        // Layoff:     "${passer} lays it off underneath to ${receiver}"
+        // Through:    "${passer} plays through to ${receiver}"
+        const phrase = passTerm!.phrase.primary;
         text = `${labelOf(action.entityId)} ${phrase} ${labelOf(targetEntityId)}`;
-        termIds.push(layoffTerm!.termId, ...layoffTerm!.subsumedTermIds);
+        termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
 
       } else {
         // Standard reception-model clause.

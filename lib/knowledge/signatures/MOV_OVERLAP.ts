@@ -60,16 +60,18 @@ import { resolveOwnerAtT, resolvePosition } from '../../engine/resolve';
 /**
  * Maximum distance (px) between any sample point on the runner's path and the
  * carrier's position at the corresponding time. A real overlap arc must physically
- * pass close to the carrier; a runner a full channel away will exceed this threshold.
+ * pass close to the carrier (runner goes AROUND the carrier, not a channel away).
+ *
+ * Calibration (all demo scenes at 160px):
+ *   - Scene B / Verify (a): minDist ≈ 108px  ← passes ✓
+ *   - Verify (d)           : minDist = 132px  ← passes ✓
+ *   - Scene H              : minDist =  69px  ← passes ✓
+ *   - Scene I (underlap)   : minDist =  59px  ← passes ✓
+ *   - Verify (e)           : minDist = 206px  ← FAILS (reported to user; not re-loosened)
+ *   - Verify (f)           : minDist = 228px  ← FAILS (reported to user; not re-loosened)
+ *   - Scene G (false+)     : minDist = 301px  ← correctly rejected ✓
  */
-/**
- * Maximum distance (px) between any sample point on the runner's path and the
- * carrier's position at the corresponding time. Calibrated so that:
- *   - genuine overlaps (runner 1–2 channels away, minDist ≤ ~230px) always pass;
- *   - extreme false positives (runner on opposite side of field, minDist ≥ 300px) fail.
- * Real-trace regressions showed 90px was too tight (legit overlaps had minDist 108–228px).
- */
-export const OVERLAP_PROXIMITY_PX = 250;
+export const OVERLAP_PROXIMITY_PX = 160;
 import {
   startsBehind,
   pathSide,
@@ -83,7 +85,7 @@ import { classifyPassDirection } from '../passDirection';
  * Returns the runner's canvas position at path parameter u ∈ [0, 1].
  * Handles both straight (linear interpolation) and bezier (quadratic) paths.
  */
-function resolvePathPoint(
+export function resolvePathPoint(
   run: RunAction,
   u: number,
   runnerStart: { x: number; y: number },
@@ -120,7 +122,7 @@ function resolvePathPoint(
  * Geometric checks (startsBehind, pathSide, endsLevelOrBeyond) evaluate against
  * the carrier returned here, whether owner or passer.
  */
-function resolveOverlapCarrier(
+export function resolveOverlapCarrier(
   doc: GafferDocument,
   run: RunAction,
   runnerId: string,
@@ -296,8 +298,6 @@ export const MOV_OVERLAP: TermSignature = {
     },
   ],
   contradictions: [
-    // MOV_UNDERLAP is not yet built; stub its termId here so the contradiction
-    // table is complete when it is added in a future prompt.
     { termId: 'mov.underlap', scope: 'player-beat' },
   ],
   anchor: 'teammate',

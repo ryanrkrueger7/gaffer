@@ -366,5 +366,32 @@ export function ballOwnerTeammate(
   return owner;
 }
 
+// ── passLateralBand ───────────────────────────────────────────────────────────
+
+/**
+ * Wide-channel band of a canvas x-coordinate relative to the attacking direction.
+ *
+ * Thresholds (flankPos axis, 0 = left touchline side, 1 = right touchline side):
+ *   'left'   — flankPos ≤ 0.25  (outer-left quarter of the pitch)
+ *   'right'  — flankPos ≥ 0.75  (outer-right quarter of the pitch)
+ *   'center' — everything in between
+ *
+ * A flankPos of 0 means the player is at the touchline on the left side of their
+ * attacking direction; 1 means the touchline on the right side.
+ *
+ * Used by ACT_SWITCH_PLAY to detect genuine field-width switches.
+ */
+export function passLateralBand(
+  x: number,
+): 'left' | 'center' | 'right' {
+  // Lateral bands are based on absolute canvas x (left touchline = x=10, right = x=790),
+  // independent of attacking direction — a switch from left to right is always a switch.
+  const fp = (x - FIELD_X_MIN) / (FIELD_X_MAX - FIELD_X_MIN);
+  // Thresholds from zones.ts wideAreaLeftMaxFlank / wideAreaRightMinFlank
+  if (fp <= 0.25) return 'left';
+  if (fp >= 0.75) return 'right';
+  return 'center';
+}
+
 // Re-export resolveOwnerAtT so matcher can use it without importing engine directly.
 export { resolveOwnerAtT } from '../engine/resolve';
