@@ -68,7 +68,10 @@ export const MOV_THIRD_MAN_RUN: TermSignature = {
       return false;
     },
 
-    // (c) actor P is neither passer A nor receiver B of the in-flight pass
+    // (c) actor P is neither passer A nor receiver B of ANY qualifying in-flight pass.
+    //     FIX 2: scan ALL in-flight passes, not just the first found. If the first
+    //     found pass targets the runner (runner = receiver), continue scanning — another
+    //     concurrent pass may still create a valid third-man context.
     (ctx) => {
       const run = ctx.action as RunAction;
       const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
@@ -85,10 +88,15 @@ export const MOV_THIRD_MAN_RUN: TermSignature = {
         if (!('entityId' in a.target)) continue;
 
         const receiverId = a.target.entityId;
-        const isThirdMan = receiverId !== ctx.actorId;
-        ctx.debug?.(`isThirdMan=${isThirdMan} (passerId=${a.entityId} receiverId=${receiverId} runnerId=${ctx.actorId})`);
-        return isThirdMan;
+        if (receiverId !== ctx.actorId) {
+          // Runner is neither passer nor receiver — this is a valid third-man context.
+          ctx.debug?.(`isThirdMan=true (passerId=${a.entityId} receiverId=${receiverId} runnerId=${ctx.actorId})`);
+          return true;
+        }
+        // Runner IS the receiver of this pass — not third-man for this pass, keep scanning.
+        ctx.debug?.(`pass ${a.id.slice(-6)} targets runner — scanning next in-flight pass`);
       }
+      ctx.debug?.(`isThirdMan=false (no qualifying in-flight pass found)`);
       return false;
     },
 

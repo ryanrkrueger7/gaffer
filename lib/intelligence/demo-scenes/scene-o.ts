@@ -20,7 +20,8 @@
 //   t=0.0 d=0.6: LM→CM pass (first leg)
 //   t=0.6 d=0.4: CM→LM return (ACT_ONE_TWO)
 //   t=1.0 d=1.5: LM carry (100,280)→(100,100)
-//   t=2.0 d=1.5: ST run (400,200)→(400,60)   ← in behind (MOV_RUN_IN_BEHIND)
+//   t=1.5 d=1.5: ST run (400,200)→(400,60)   ← in behind (MOV_RUN_IN_BEHIND)
+//                  start=1.5: LM at y≈220 (mid-carry), ST at y=200 → ST beyond ✓
 //   t=2.5 d=1.0: LM→ST cross (ACT_CROSS; lifecycle → "meets the cross")
 //   shot after cross lands
 
@@ -45,7 +46,7 @@ export function run(): void {
   const p1       = makePass({ entityId: lm.id, beatId: beat.id, target: { entityId: cm.id }, start: 0.0, duration: 0.6 });
   const p2       = makePass({ entityId: cm.id, beatId: beat.id, target: { entityId: lm.id }, start: 0.6, duration: 0.4 });
   const carry    = makeCarry({ entityId: lm.id, beatId: beat.id, destination: { x: 100, y: 100 }, start: 1.0, duration: 1.5 });
-  const stRun    = makeRun({ entityId: st.id, beatId: beat.id, destination: { x: 400, y: 60  }, start: 2.0, duration: 1.5 });
+  const stRun    = makeRun({ entityId: st.id, beatId: beat.id, destination: { x: 400, y: 60  }, start: 1.5, duration: 1.5 });
   const p3       = makePass({ entityId: lm.id, beatId: beat.id, target: { entityId: st.id }, start: 2.5, duration: 1.0 });
 
   doc.actions.push(lmFwdRun, p1, p2, carry, stRun, p3);
