@@ -62,16 +62,17 @@ import { resolveOwnerAtT, resolvePosition } from '../../engine/resolve';
  * carrier's position at the corresponding time. A real overlap arc must physically
  * pass close to the carrier (runner goes AROUND the carrier, not a channel away).
  *
- * Calibration (all demo scenes at 160px):
- *   - Scene B / Verify (a): minDist ≈ 108px  ← passes ✓
- *   - Verify (d)           : minDist = 132px  ← passes ✓
- *   - Scene H              : minDist =  69px  ← passes ✓
- *   - Scene I (underlap)   : minDist =  59px  ← passes ✓
- *   - Verify (e)           : minDist = 206px  ← FAILS (reported to user; not re-loosened)
- *   - Verify (f)           : minDist = 228px  ← FAILS (reported to user; not re-loosened)
- *   - Scene G (false+)     : minDist = 301px  ← correctly rejected ✓
+ * Calibration gap table (FIX 1 — threshold set to 250px):
+ *   true+  Scene I (underlap)   : minDist =  59px ← passes ✓
+ *   true+  Scene H              : minDist =  69px ← passes ✓
+ *   true+  Scene B / Verify (a) : minDist ≈ 108px ← passes ✓
+ *   true+  Verify (d)           : minDist = 132px ← passes ✓
+ *   true+  Verify (e)           : minDist = 206px ← passes ✓
+ *   true+  Verify (f)           : minDist = 228px ← passes ✓
+ *          ── gap: 228 → 301 (73px) ──────────────────────────
+ *   false+ Scene G              : minDist = 301px ← correctly rejected ✓
  */
-export const OVERLAP_PROXIMITY_PX = 160;
+export const OVERLAP_PROXIMITY_PX = 250;
 import {
   startsBehind,
   pathSide,
