@@ -2,7 +2,7 @@
 // The runner starts behind a teammate with the ball, cuts to the CENTRAL side of
 // that teammate, and ends level or beyond — the classic underlapping run.
 //
-// Shares resolveOverlapCarrier, resolvePathPoint, and OVERLAP_PROXIMITY_PX with
+// Shares resolveOverlapCarrier, findLevelCrossing, and OVERLAP_LATERAL_GAP_PX with
 // MOV_OVERLAP. pathSide='inside' is the only predicate that differs from overlap.
 //
 // Predicate translation:
@@ -14,7 +14,8 @@
 //     (d) pathSide 'inside': runner cuts to the CENTRAL side of the carrier
 //         (bezier-aware — uses all path samples, not just midpoint)
 //     (e) endsLevelOrBeyond: runner ends at the same depth as or beyond the carrier
-//     (f) proximity: runner's path passes within OVERLAP_PROXIMITY_PX of the carrier
+//     (f) level-crossing gate: at t*, |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX
+//         AND runner on INTERIOR side of carrier at t*
 //
 //   silence:
 //     (s1) carrier plays a FORWARD pass (not to the runner) before the runner overtakes.
@@ -43,8 +44,8 @@ import {
 import { classifyPassDirection } from '../passDirection';
 import {
   resolveOverlapCarrier,
-  resolvePathPoint,
-  OVERLAP_PROXIMITY_PX,
+  findLevelCrossing,
+  OVERLAP_LATERAL_GAP_PX,
 } from './MOV_OVERLAP';
 
 export const MOV_UNDERLAP: TermSignature = {
@@ -114,10 +115,15 @@ export const MOV_UNDERLAP: TermSignature = {
       return beyond;
     },
 
-    // (f) proximity: runner's path passes within OVERLAP_PROXIMITY_PX of the carrier.
+    // (f) level-crossing gate: at t* where runner's attack-axis progress crosses the
+    //     carrier's, require:
+    //       (i)  |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX (lateral close)
+    //       (ii) runner on INTERIOR side of carrier at t*               (cuts inside)
     (ctx) => {
       const run = ctx.action as RunAction;
       const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
+      const frameTeam = ctx.frame.teams.find(t => t.id === (entity as { team?: string } | undefined)?.team)!;
+      const attackDir = frameTeam.attackingDirection!;
       const found = resolveOverlapCarrier(
         ctx.doc, run, ctx.actorId, (entity as { team?: string } | undefined)?.team,
       );
@@ -128,21 +134,17 @@ export const MOV_UNDERLAP: TermSignature = {
         ? { x: run.destination.x, y: run.destination.y }
         : resolvePosition(ctx.doc, run.entityId, run.start + run.duration);
 
-      const N = 8;
-      let minDist = Infinity;
-      let minSampleT = run.start;
-
-      for (let i = 0; i <= N; i++) {
-        const u = i / N;
-        const sampleT = run.start + run.duration * u;
-        const runnerPos = resolvePathPoint(run, u, runnerStart, runnerEnd);
-        const carrierPos = resolvePosition(ctx.doc, found.carrierId, sampleT);
-        const dist = Math.hypot(runnerPos.x - carrierPos.x, runnerPos.y - carrierPos.y);
-        if (dist < minDist) { minDist = dist; minSampleT = sampleT; }
+      const crossing = findLevelCrossing(
+        ctx.doc, run, found.carrierId, attackDir, runnerStart, runnerEnd,
+      );
+      if (!crossing) {
+        ctx.debug?.(`levelCrossing: no t* (runner never reaches carrier level)`);
+        return false;
       }
 
-      ctx.debug?.(`proximity minDist=${Math.round(minDist)}px at sampleT=${minSampleT.toFixed(2)} threshold=${OVERLAP_PROXIMITY_PX}px`);
-      return minDist <= OVERLAP_PROXIMITY_PX;
+      const { tStar, lateralDist, isOutside } = crossing;
+      ctx.debug?.(`levelCrossing tStar=${tStar.toFixed(2)} lateralDist=${Math.round(lateralDist)}px threshold=${OVERLAP_LATERAL_GAP_PX}px outside=${isOutside}`);
+      return lateralDist <= OVERLAP_LATERAL_GAP_PX && !isOutside; // interior side for underlap
     },
   ],
   silence: [

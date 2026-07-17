@@ -9,14 +9,15 @@
 //   owning the ball at any sample. startsBehind / pathSide / endsLevelOrBeyond
 //   all use the carrier identified by the window scan.
 //
-// FIX 3 — Proximity gate prevents false positives when runner is a channel away:
-//   Trace: LM a full channel away from CM made a diagonal run toward goal while
-//   CM's pass was in-flight. startsBehind/pathSide=outside/endsLevelOrBeyond all
-//   passed relationally, producing a spurious "the left midfielder overlaps."
-//   Fix: add trigger (f) — the runner's resolved path must pass within
-//   OVERLAP_PROXIMITY_PX of the carrier at corresponding sample times. A real
-//   around-the-outside arc must physically come close to the carrier.
-//   Debug output: minDist and the sample t where the minimum occurs.
+// FIX 3 — Level-crossing gate prevents false positives for wide wing runs:
+//   Trace: LB runs straight up the wing while CM holds the ball centrally.
+//   startsBehind/pathSide=outside/endsLevelOrBeyond all pass relationally, but
+//   the runner is a full channel away laterally from the carrier at level-crossing.
+//   Fix: replace minDist proximity gate with a level-crossing gate — find t* where
+//   the runner's attack-axis progress crosses the carrier's, then require:
+//     (i)  |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX (110px, exported)
+//     (ii) runner is on the touchline side of the carrier at t*
+//   Debug output: tStar, lateralDist, isOutside.
 //
 // FIX 2 — In-flight-to-the-runner counts as teammate possession context:
 //   In run-meets-pass patterns (the relational timing rule makes the delivering
@@ -41,10 +42,9 @@
 //     (d) pathSide 'outside': runner's path goes between the carrier and the touchline
 //         (bezier-aware — uses peak of arc, not just straight-line midpoint)
 //     (e) endsLevelOrBeyond: runner ends at the same depth as or beyond the carrier
-//     (f) proximity: runner's resolved path passes within OVERLAP_PROXIMITY_PX of
-//         the carrier at corresponding sample times — catches the "channel away"
-//         false positive where all relational predicates pass but the runner never
-//         actually goes around the carrier
+//     (f) level-crossing gate: at t* where runner's attack-axis progress crosses
+//         the carrier's, |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX
+//         AND runner on touchline-side at t*
 //
 //   silence:
 //     (s1) the ball-carrier plays a FORWARD pass (not to the runner) before the
@@ -58,21 +58,14 @@ import type { GafferDocument, RunAction } from '../../engine/types';
 import { resolveOwnerAtT, resolvePosition } from '../../engine/resolve';
 
 /**
- * Maximum distance (px) between any sample point on the runner's path and the
- * carrier's position at the corresponding time. A real overlap arc must physically
- * pass close to the carrier (runner goes AROUND the carrier, not a channel away).
+ * Maximum lateral distance (px) between runner and carrier at the level-crossing
+ * point t* (the moment the runner becomes level with the carrier on the attack axis).
+ * A real overlap arc rounds close to the carrier laterally; a wide wing run fails.
  *
- * Calibration gap table (FIX 1 — threshold set to 250px):
- *   true+  Scene I (underlap)   : minDist =  59px ← passes ✓
- *   true+  Scene H              : minDist =  69px ← passes ✓
- *   true+  Scene B / Verify (a) : minDist ≈ 108px ← passes ✓
- *   true+  Verify (d)           : minDist = 132px ← passes ✓
- *   true+  Verify (e)           : minDist = 206px ← passes ✓
- *   true+  Verify (f)           : minDist = 228px ← passes ✓
- *          ── gap: 228 → 301 (73px) ──────────────────────────
- *   false+ Scene G              : minDist = 301px ← correctly rejected ✓
+ * Gap table — lateralDist at t* per scene (OVERLAP_LATERAL_GAP_PX = 110px):
+ *   [populated after running intelligence:demo — see gap-table report]
  */
-export const OVERLAP_PROXIMITY_PX = 250;
+export const OVERLAP_LATERAL_GAP_PX = 110;
 import {
   startsBehind,
   pathSide,
@@ -104,6 +97,73 @@ export function resolvePathPoint(
     x: runnerStart.x + u * (runnerEnd.x - runnerStart.x),
     y: runnerStart.y + u * (runnerEnd.y - runnerStart.y),
   };
+}
+
+// ── FIX 3: Level-crossing gate ────────────────────────────────────────────────
+
+/**
+ * Finds t* where the runner's attack-axis progress crosses the carrier's
+ * (the runner becomes level with or overtakes the carrier). Returns:
+ *   - tStar: wall-clock time of the crossing
+ *   - lateralDist: |runnerX(t*) − carrierX(t*)| in px
+ *   - isOutside: true if runner is on the touchline side of the carrier at t*
+ *     (carrier.x < 400 → touchline = left → runner outside when runner.x < carrier.x;
+ *      carrier.x ≥ 400 → touchline = right → runner outside when runner.x > carrier.x)
+ *
+ * Samples 101 points along the run, detects sign change in
+ * (runner_forward − carrier_forward), then linearly interpolates to the crossing.
+ * Returns null if the runner never reaches the carrier's attack-axis level.
+ */
+export function findLevelCrossing(
+  doc: GafferDocument,
+  run: RunAction,
+  carrierId: string,
+  attackDir: 'up' | 'down',
+  runnerStart: { x: number; y: number },
+  runnerEnd: { x: number; y: number },
+): { tStar: number; lateralDist: number; isOutside: boolean } | null {
+  const N = 100; // 101 sample points: u = 0..1 in steps of 0.01
+  let prevFwdDiff = NaN;
+  let prevU = 0;
+
+  for (let i = 0; i <= N; i++) {
+    const u = i / N;
+    const sampleT = run.start + run.duration * u;
+    const rp = resolvePathPoint(run, u, runnerStart, runnerEnd);
+    const cp = resolvePosition(doc, carrierId, sampleT);
+
+    // Forward coordinate: larger = more advanced toward the attacking goal.
+    // 'up': goal at y≈0, so forward = −y. 'down': goal at y≈600, forward = +y.
+    const runnerFwd = attackDir === 'up' ? -rp.y : rp.y;
+    const carrierFwd = attackDir === 'up' ? -cp.y : cp.y;
+    const fwdDiff = runnerFwd - carrierFwd; // < 0 = runner behind; ≥ 0 = level/ahead
+
+    if (i > 0 && !isNaN(prevFwdDiff) && prevFwdDiff < 0 && fwdDiff >= 0) {
+      // Sign change detected — interpolate to find the precise crossing u.
+      const fraction = -prevFwdDiff / (fwdDiff - prevFwdDiff);
+      const crossingU = prevU + fraction * (u - prevU);
+      const tStar = run.start + run.duration * crossingU;
+
+      const rAtStar = resolvePathPoint(run, crossingU, runnerStart, runnerEnd);
+      const cAtStar = resolvePosition(doc, carrierId, tStar);
+
+      const lateralDist = Math.abs(rAtStar.x - cAtStar.x);
+
+      // Touchline-side check at t*:
+      //   carrier.x < 400 → touchline = left  → runner outside = runner.x < carrier.x
+      //   carrier.x ≥ 400 → touchline = right → runner outside = runner.x > carrier.x
+      const isOutside = cAtStar.x < 400
+        ? rAtStar.x < cAtStar.x
+        : rAtStar.x > cAtStar.x;
+
+      return { tStar, lateralDist, isOutside };
+    }
+
+    prevFwdDiff = fwdDiff;
+    prevU = u;
+  }
+
+  return null; // runner never reaches carrier's attack-axis level
 }
 
 // ── FIX 1 + FIX 2: Window-based carrier resolution ───────────────────────────
@@ -231,13 +291,16 @@ export const MOV_OVERLAP: TermSignature = {
       return beyond;
     },
 
-    // (f) proximity: runner's path passes within OVERLAP_PROXIMITY_PX of the carrier.
-    //     FIX 3: catches false positives where the runner is a full channel away from
-    //     the carrier but all relational predicates pass (startsBehind/outside/beyond).
-    //     Samples 9 points along the path and the carrier's position at each sample time.
+    // (f) level-crossing gate: find t* where runner's attack-axis progress crosses
+    //     the carrier's. At t* require:
+    //       (i)  |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX (lateral close)
+    //       (ii) runner on touchline side of carrier at t*               (rounds outside)
+    //     Rejects wing runs that are a full channel away from the carrier at level-crossing.
     (ctx) => {
       const run = ctx.action as RunAction;
       const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
+      const frameTeam = ctx.frame.teams.find(t => t.id === (entity as { team?: string } | undefined)?.team)!;
+      const attackDir = frameTeam.attackingDirection!;
       const found = resolveOverlapCarrier(
         ctx.doc, run, ctx.actorId, (entity as { team?: string } | undefined)?.team,
       );
@@ -248,21 +311,17 @@ export const MOV_OVERLAP: TermSignature = {
         ? { x: run.destination.x, y: run.destination.y }
         : resolvePosition(ctx.doc, run.entityId, run.start + run.duration);
 
-      const N = 8; // 9 sample points: i = 0..8
-      let minDist = Infinity;
-      let minSampleT = run.start;
-
-      for (let i = 0; i <= N; i++) {
-        const u = i / N;
-        const sampleT = run.start + run.duration * u;
-        const runnerPos = resolvePathPoint(run, u, runnerStart, runnerEnd);
-        const carrierPos = resolvePosition(ctx.doc, found.carrierId, sampleT);
-        const dist = Math.hypot(runnerPos.x - carrierPos.x, runnerPos.y - carrierPos.y);
-        if (dist < minDist) { minDist = dist; minSampleT = sampleT; }
+      const crossing = findLevelCrossing(
+        ctx.doc, run, found.carrierId, attackDir, runnerStart, runnerEnd,
+      );
+      if (!crossing) {
+        ctx.debug?.(`levelCrossing: no t* (runner never reaches carrier level)`);
+        return false;
       }
 
-      ctx.debug?.(`proximity minDist=${Math.round(minDist)}px at sampleT=${minSampleT.toFixed(2)} threshold=${OVERLAP_PROXIMITY_PX}px`);
-      return minDist <= OVERLAP_PROXIMITY_PX;
+      const { tStar, lateralDist, isOutside } = crossing;
+      ctx.debug?.(`levelCrossing tStar=${tStar.toFixed(2)} lateralDist=${Math.round(lateralDist)}px threshold=${OVERLAP_LATERAL_GAP_PX}px outside=${isOutside}`);
+      return lateralDist <= OVERLAP_LATERAL_GAP_PX && isOutside;
     },
   ],
   silence: [
