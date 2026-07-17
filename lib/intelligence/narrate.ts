@@ -357,18 +357,10 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
       if (rtId) termIds.push(rtId);
       termIds.push(`direction.${outgoingDir}`);
 
-      // "continuing his run" only for spatial movement terms that imply the player is
-      // actively running into space. MOV_CHECK_TO_BALL resolves plainly.
-      const usesContinuation =
-        resolvedRun?.termId === 'mov.overlap' ||
-        resolvedRun?.termId === 'mov.run_in_behind' ||
-        resolvedRun?.termId === 'mov.underlap' ||
-        resolvedRun?.termId === 'mov.third_man_run';
-
       // Through-ball + lifecycle composition is applied only when the resolving run is
       // 'mov.run_in_behind' or 'mov.third_man_run'. Overlap/underlap delivery passes use the
-      // plain lifecycle phrasing ("continuing his run, receives from") because the
-      // "plays through" verb conflicts with the spatial sense of going around a player.
+      // plain lifecycle phrasing ("receives from") because the "plays through" verb conflicts
+      // with the spatial sense of going around a player.
       const isThroughBallRun =
         isThroughBall && resolvedRun != null &&
         resolvedRun.termId !== 'mov.overlap' &&
@@ -380,8 +372,7 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
       const skipLifecycle = resolvedRun?.termId === 'mov.drop_in';
 
       if (isCross && resolvedRun) {
-        // Cross + lifecycle runner — "meets the cross" (NOT "continuing his run";
-        // that phrase is gated to overlap/underlap/in-behind patterns only).
+        // Cross + lifecycle runner — "meets the cross".
         text = `${labelOf(targetEntityId)} meets the cross from ${labelOf(action.entityId)}`;
         termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
         termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
@@ -393,26 +384,19 @@ export function narrate(doc: GafferDocument, opts?: NarrationOptions): Narration
 
       } else if (isThroughBallRun) {
         // Through ball into an active in-behind or third-man run — passer-first.
-        text = usesContinuation
-          ? `${labelOf(action.entityId)} plays ${labelOf(targetEntityId)} through, continuing his run`
-          : `${labelOf(action.entityId)} plays through to ${labelOf(targetEntityId)}`;
+        text = `${labelOf(action.entityId)} plays ${labelOf(targetEntityId)} through`;
         termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
         termIds.push(resolvedRun!.termId, ...resolvedRun!.subsumedTermIds);
 
       } else if (!skipLifecycle && resolvedRun && isLayoff) {
-        // FIX 4: combined lifecycle + layoff — receiver-first so "continuing his run"
-        // names the correct player (the receiver/runner, not the passer).
-        text = usesContinuation
-          ? `${labelOf(targetEntityId)}, continuing his run, receives the layoff from ${labelOf(action.entityId)}`
-          : `${labelOf(targetEntityId)} receives the layoff from ${labelOf(action.entityId)}`;
+        // Combined lifecycle + layoff — receiver-first.
+        text = `${labelOf(targetEntityId)} receives the layoff from ${labelOf(action.entityId)}`;
         termIds.push(passTerm!.termId, ...passTerm!.subsumedTermIds);
         termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
 
       } else if (!skipLifecycle && resolvedRun) {
-        // Lifecycle continuation only — receiver-first per spec.
-        text = usesContinuation
-          ? `${labelOf(targetEntityId)}, continuing his run, receives from ${labelOf(action.entityId)}`
-          : `${labelOf(targetEntityId)} receives from ${labelOf(action.entityId)}`;
+        // Lifecycle only — receiver-first per spec.
+        text = `${labelOf(targetEntityId)} receives from ${labelOf(action.entityId)}`;
         termIds.push(resolvedRun.termId, ...resolvedRun.subsumedTermIds);
 
       } else if (isLayoff || isSwitchPlay || isOneTwo || isThroughBall) {
