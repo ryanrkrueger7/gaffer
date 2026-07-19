@@ -236,6 +236,41 @@ Tier ordering: Tier 1 (ball + teammates only) is milestone §6.2. Tier 2
 (requires opponents: DEF_*, draw/dummy, pin, goal-side, overload) follows.
 Tier 3 (body shape/pressure) fires weakly and is tuned by corrections.
 
+**Signature inventory (built, with tuned constants):** MOV_CHECK_TO_BALL
+(projection-based playerMotionTowardBall; ends-near-ball 200px),
+ACT_LAYOFF_UNDERNEATH (incoming-forward window 2s, receiver closing),
+MOV_RUN_IN_BEHIND, MOV_OVERLAP / MOV_UNDERLAP (level-crossing lateral
+gate OVERLAP_LATERAL_GAP_PX=130; side check at t*; bend gates 8°/5°),
+MOV_THIRD_MAN_RUN (scans all window-overlapping passes; passes targeting
+the runner never qualify), ACT_ONE_TWO, ACT_SWITCH_PLAY (single-pass
+geometric subset), ACT_THROUGH_BALL, MOV_DROP_IN, ACT_CROSS.
+
+**Standing method (learned the hard way):**
+- Falsification scenes are mandatory: every signature fix adds its
+  FAILING case to the demo suite permanently. A suite of true positives
+  cannot object to over-firing.
+- Threshold changes require approval: any constant change not explicitly
+  ordered is an automatic audit rejection, regardless of green scenes.
+  When data doesn't separate, STOP and report the table.
+- Debug traces are the tuning currency: no signature change without the
+  predicate-level evidence.
+
+
+### 6.5 Narration architecture v2 — spine + annotations + synthesis (next build)
+
+**Spine:** the ball story (passes/carries/shots with reception verbs) is
+always narrated and always correct independent of run recognition.
+**Annotations:** matched run terms attach to spine clauses (or emit short
+pre-clauses) rather than competing as peer clauses: "plays the left back
+through on the overlap", "who overlaps the right midfielder" on a
+one-two. Ambiguous/unmatched runs: plain statement or silence — never a
+guess. **Synthesis pass:** post-clause multi-beat pattern recognition
+over the clause stream + possession-side trajectory (Tier 1.5): "switches
+it around the back" replacing 2-3 back-line pass clauses; "switches play
+through midfield" for chained lateral progressions. Runs after clause
+generation; wraps/replaces clause groups; term IDs preserved for
+corrections.
+
 ---
 
 ## 7. Deferred (logged, not lost)
@@ -245,6 +280,7 @@ Tier 3 (body shape/pressure) fires weakly and is tuned by corrections.
 - S-curve / second bezier handle. Polygon zones (type supports it; editor draws rect only). Marker label hierarchy (number prominent, position small). Beat CRUD objects. Full RLS/auth gating.
 - Goal entity orientation/rotation (goals currently always face north-south; needed only if horizontal field orientation is ever supported).
 - Mini-goal-placement-as-regime-cue derivation (placing mini-goals proposes multi-directional regime + unique-label mode; add as a derivation rule on top of the *Source machinery).
+- Tier 2 one-two defender-beating condition; goal-relevant composition ("plays him through on goal" when the through ball's receiver is bearing on goal in the attacking third)
 
 ---
 
@@ -252,6 +288,7 @@ Tier 3 (body shape/pressure) fires weakly and is tuned by corrections.
 - ~~Freeze the full Frame contract~~ — FROZEN as §3.6. Build against it.
 - Identity field names are **verified** (§2.1) — no reconciliation needed. `positionId` (UI) vs `inferredPositionId` (inference-only) are clean.
 - `lib/knowledge` export surface is **mostly clean**: the editor imports `inferPosition` from the `@/lib/knowledge` index (good). `formations.ts` is not re-exported from the index (used internally by `positionInference`) — fine unless a head needs `getFormation` directly, in which case add it to the index. `zones.ts` has geometry as descriptive strings only (no runtime geometry-testing function yet) - zones.ts descriptive-only line resolved-by-§6.4.; `scoring.ts` is descriptive only (no resolution logic) — both fine for narration's first milestone, which doesn't need them.
+- demo-suite inventory reconciliation (24→19 rename/merge audit).
 
 ---
 
