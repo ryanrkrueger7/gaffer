@@ -45,8 +45,16 @@ import { classifyPassDirection } from '../passDirection';
 import {
   resolveOverlapCarrier,
   findLevelCrossing,
+  pathBendDeg,
   OVERLAP_LATERAL_GAP_PX,
 } from './MOV_OVERLAP';
+
+// Underlap bend threshold is intentionally lower than MOV_OVERLAP's 15°.
+// An overlap's arc around the carrier is constitutive — the bend IS the move.
+// An underlap is a near-straight interior penetration; its bend gate exists
+// only to kill dead-straight parallel runs. The side check (pathSide='inside'
+// + !isOutside at t*) is the primary discriminator.
+const UNDERLAP_BEND_MIN_DEG = 5;
 
 export const MOV_UNDERLAP: TermSignature = {
   termId: 'mov.underlap',
@@ -115,10 +123,10 @@ export const MOV_UNDERLAP: TermSignature = {
       return beyond;
     },
 
-    // (f) level-crossing gate: at t* where runner's attack-axis progress crosses the
-    //     carrier's, require:
-    //       (i)  |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX (lateral close)
-    //       (ii) runner on INTERIOR side of carrier at t*               (cuts inside)
+    // (f) level-crossing + bend gate: at t* require:
+    //       (i)   |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX (lateral close)
+    //       (ii)  runner on INTERIOR side of carrier at t*               (cuts inside)
+    //       (iii) path bend >= UNDERLAP_BEND_MIN_DEG                       (not parallel)
     (ctx) => {
       const run = ctx.action as RunAction;
       const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
@@ -142,9 +150,10 @@ export const MOV_UNDERLAP: TermSignature = {
         return false;
       }
 
-      const { tStar, lateralDist, isOutside } = crossing;
-      ctx.debug?.(`levelCrossing tStar=${tStar.toFixed(2)} lateralDist=${Math.round(lateralDist)}px threshold=${OVERLAP_LATERAL_GAP_PX}px outside=${isOutside}`);
-      return lateralDist <= OVERLAP_LATERAL_GAP_PX && !isOutside; // interior side for underlap
+      const { tStar, crossingU, lateralDist, isOutside } = crossing;
+      const bend = pathBendDeg(run, crossingU, attackDir, runnerStart, runnerEnd);
+      ctx.debug?.(`levelCrossing tStar=${tStar.toFixed(2)} lateralDist=${Math.round(lateralDist)}px threshold=${OVERLAP_LATERAL_GAP_PX}px outside=${isOutside} bend=${bend.toFixed(1)}°`);
+      return lateralDist <= OVERLAP_LATERAL_GAP_PX && !isOutside && bend >= UNDERLAP_BEND_MIN_DEG;
     },
   ],
   silence: [

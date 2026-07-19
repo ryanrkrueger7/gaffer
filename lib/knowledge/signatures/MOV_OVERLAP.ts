@@ -60,12 +60,31 @@ import { resolveOwnerAtT, resolvePosition } from '../../engine/resolve';
 /**
  * Maximum lateral distance (px) between runner and carrier at the level-crossing
  * point t* (the moment the runner becomes level with the carrier on the attack axis).
- * A real overlap arc rounds close to the carrier laterally; a wide wing run fails.
  *
- * Gap table — lateralDist at t* per scene (OVERLAP_LATERAL_GAP_PX = 110px):
- *   [populated after running intelligence:demo — see gap-table report]
+ * Calibration gap table (OVERLAP_LATERAL_GAP_PX = 130px):
+ *   true+  Scene I  (underlap)      : lateralDist =  60px ← passes ✓
+ *   true+  Scene H                  : lateralDist =  72px ← passes ✓
+ *   true+  Scene R  (new pass-and-go): lateralDist = ~33px ← passes ✓
+ *   true+  Scene B / Verify (a)     : lateralDist = 114px ← passes ✓
+ *          ── gap: 114 → 138 (24px) ──────────────────────────────
+ *   false+ Verify (d) [re-labeled]  : lateralDist = 138px ← correctly rejected ✓
+ *   false+ Scene P  (coach 4)       : lateralDist = 205px ← correctly rejected ✓
+ *   false+ Verify (e) [re-labeled]  : lateralDist = 218px ← correctly rejected ✓
+ *   false+ Verify (f) [re-labeled]  : lateralDist = 251px ← correctly rejected ✓
+ *   false+ Scene G                  : lateralDist = 300px ← correctly rejected ✓
  */
-export const OVERLAP_LATERAL_GAP_PX = 110;
+export const OVERLAP_LATERAL_GAP_PX = 130;
+
+/**
+ * Minimum path-bend angle (degrees) required at t* for an overlap or underlap.
+ *
+ * For BEZIER runs: angle between tangent at run.start and tangent at t*.
+ * For LINEAR runs: angle between the path direction and the attack axis.
+ *
+ * A dead-straight parallel run (angle ≈ 0°) is never an overlap regardless of
+ * lateral gap — the runner is moving alongside the carrier, not rounding them.
+ */
+export const OVERLAP_BEND_MIN_DEG = 15;
 import {
   startsBehind,
   pathSide,
@@ -121,7 +140,7 @@ export function findLevelCrossing(
   attackDir: 'up' | 'down',
   runnerStart: { x: number; y: number },
   runnerEnd: { x: number; y: number },
-): { tStar: number; lateralDist: number; isOutside: boolean } | null {
+): { tStar: number; crossingU: number; lateralDist: number; isOutside: boolean } | null {
   const N = 100; // 101 sample points: u = 0..1 in steps of 0.01
   let prevFwdDiff = NaN;
   let prevU = 0;
@@ -156,7 +175,7 @@ export function findLevelCrossing(
         ? rAtStar.x < cAtStar.x
         : rAtStar.x > cAtStar.x;
 
-      return { tStar, lateralDist, isOutside };
+      return { tStar, crossingU, lateralDist, isOutside };
     }
 
     prevFwdDiff = fwdDiff;
@@ -164,6 +183,55 @@ export function findLevelCrossing(
   }
 
   return null; // runner never reaches carrier's attack-axis level
+}
+
+/**
+ * Computes the bend angle (degrees) of the runner's path for the overlap/underlap
+ * bend-requirement check.
+ *
+ * For BEZIER runs: angle between tangent at u=0 (run start) and tangent at crossingU (t*).
+ *   A curved arc has a meaningful tangent change; a near-straight bezier approaches 0°.
+ *
+ * For LINEAR runs: angle between the path direction and the attack axis.
+ *   A dead-straight parallel run (path = attack axis) scores 0° and fails the gate.
+ *   A diagonal run curving around the carrier scores a proportionate angle.
+ */
+export function pathBendDeg(
+  run: RunAction,
+  crossingU: number,
+  attackDir: 'up' | 'down',
+  runnerStart: { x: number; y: number },
+  runnerEnd: { x: number; y: number },
+): number {
+  if (run.path.type === 'bezier') {
+    const { cx, cy } = run.path;
+    const p0 = runnerStart;
+    const p1 = { x: cx, y: cy };
+    const p2 = runnerEnd;
+
+    // Quadratic bezier tangent: P'(u) = 2[−(1−u)P0 + (1−2u)P1 + uP2]
+    const tangentAt = (u: number) => ({
+      tx: 2 * (-(1 - u) * p0.x + (1 - 2 * u) * p1.x + u * p2.x),
+      ty: 2 * (-(1 - u) * p0.y + (1 - 2 * u) * p1.y + u * p2.y),
+    });
+
+    const t0 = tangentAt(0);
+    const t1 = tangentAt(crossingU);
+    const dot = t0.tx * t1.tx + t0.ty * t1.ty;
+    const mag0 = Math.hypot(t0.tx, t0.ty);
+    const mag1 = Math.hypot(t1.tx, t1.ty);
+    if (mag0 < 1e-6 || mag1 < 1e-6) return 0;
+    return Math.acos(Math.max(-1, Math.min(1, dot / (mag0 * mag1)))) * 180 / Math.PI;
+  }
+
+  // Linear run: angle between path direction and the attack axis (0,±1).
+  const dx = runnerEnd.x - runnerStart.x;
+  const dy = runnerEnd.y - runnerStart.y;
+  const mag = Math.hypot(dx, dy);
+  if (mag < 1e-6) return 0;
+  const axisY = attackDir === 'up' ? -1 : 1; // attack axis unit vector is (0, axisY)
+  const dotAxis = (dy / mag) * axisY;
+  return Math.acos(Math.max(-1, Math.min(1, dotAxis))) * 180 / Math.PI;
 }
 
 // ── FIX 1 + FIX 2: Window-based carrier resolution ───────────────────────────
@@ -291,11 +359,12 @@ export const MOV_OVERLAP: TermSignature = {
       return beyond;
     },
 
-    // (f) level-crossing gate: find t* where runner's attack-axis progress crosses
+    // (f) level-crossing + bend gate: find t* where runner's attack-axis progress crosses
     //     the carrier's. At t* require:
-    //       (i)  |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX (lateral close)
-    //       (ii) runner on touchline side of carrier at t*               (rounds outside)
-    //     Rejects wing runs that are a full channel away from the carrier at level-crossing.
+    //       (i)   |runnerX(t*) − carrierX(t*)| <= OVERLAP_LATERAL_GAP_PX (lateral close)
+    //       (ii)  runner on touchline side of carrier at t*               (rounds outside)
+    //       (iii) path bend >= OVERLAP_BEND_MIN_DEG                       (not parallel)
+    //     Rejects wing runs far from the carrier and dead-straight parallel runs.
     (ctx) => {
       const run = ctx.action as RunAction;
       const entity = ctx.doc.entities.find(e => e.id === ctx.actorId);
@@ -319,9 +388,10 @@ export const MOV_OVERLAP: TermSignature = {
         return false;
       }
 
-      const { tStar, lateralDist, isOutside } = crossing;
-      ctx.debug?.(`levelCrossing tStar=${tStar.toFixed(2)} lateralDist=${Math.round(lateralDist)}px threshold=${OVERLAP_LATERAL_GAP_PX}px outside=${isOutside}`);
-      return lateralDist <= OVERLAP_LATERAL_GAP_PX && isOutside;
+      const { tStar, crossingU, lateralDist, isOutside } = crossing;
+      const bend = pathBendDeg(run, crossingU, attackDir, runnerStart, runnerEnd);
+      ctx.debug?.(`levelCrossing tStar=${tStar.toFixed(2)} lateralDist=${Math.round(lateralDist)}px threshold=${OVERLAP_LATERAL_GAP_PX}px outside=${isOutside} bend=${bend.toFixed(1)}°`);
+      return lateralDist <= OVERLAP_LATERAL_GAP_PX && isOutside && bend >= OVERLAP_BEND_MIN_DEG;
     },
   ],
   silence: [

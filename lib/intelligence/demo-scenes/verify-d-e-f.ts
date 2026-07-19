@@ -1,11 +1,14 @@
-// Verify (d) — pass-and-go overlap  [FIX 1]
-// LB plays to LM then immediately starts an overlapping run while the ball is
-// still in flight. LM receives and plays back into LB's run.
+// Verify (d) — pass-and-go: wide carrier, OVERLAP SILENT  [re-labeled: coach ruling]
+// LB runs from behind LM while LM has the ball. LB is 1+ channel away from LM
+// at level-crossing (lateralDist=138px > OVERLAP_LATERAL_GAP_PX=130). Coach ruling:
+// a runner rounding a carrier 1–2 channels away is NOT an overlap — this is a
+// fullback providing width. Overlap must NOT fire. See Scene R for the intended
+// tight-geometry pass-and-go test.
 //
 // Expected:
 //   1. the left back plays the left midfielder
-//   2. the left back overlaps
-//   3. the left back receives from the left midfielder
+//   2. the left midfielder plays through to the left back   (ACT_THROUGH_BALL)
+//   LB run: SILENT (lateralDist 138px > 130px gap threshold)
 //
 // Layout (team A attacks 'up'):
 //   LB  (150, 400)  — left back, starts with ball
@@ -13,18 +16,17 @@
 //
 // Timeline:
 //   t=0.0 d=0.8: LB→LM pass
-//   t=0.3 d=1.2: LB overlap run (150,400)→(80,180)  ← starts during ball flight
+//   t=0.3 d=1.2: LB run (150,400)→(80,180)  ← 138px from LM at t* → SILENT
 //   t=1.0 d=0.8: LM→LB pass
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// Verify (e) — run-meets-pass overlap  [FIX 2]
-// LB passes to CM; CM holds; CM→LB pass concurrent with LB's run (ball in-flight
-// for entire run window). resolveOwnerAtT returns null; in-flight-passer finds CM.
+// Verify (e) — run-meets-pass: very wide, OVERLAP SILENT  [re-labeled: coach ruling]
+// LB is >2 channels from CM at level-crossing (lateralDist=218px). Not an overlap.
 //
 // Expected:
 //   1. the left back plays the central midfielder
-//   2. the left back overlaps
-//   3. the left back receives from the central midfielder
+//   2. the central midfielder plays through to the left back  (ACT_THROUGH_BALL)
+//   LB run: SILENT (lateralDist 218px > 130px gap threshold)
 //
 // Layout (team A attacks 'up'):
 //   LB  (150, 400)  — left back, starts with ball
@@ -32,19 +34,18 @@
 //
 // Timeline:
 //   t=0.0 d=0.8: LB→CM pass
-//   t=1.0 d=1.0: LB overlap run (150,400)→(80,200)
+//   t=1.0 d=1.0: LB run (150,400)→(80,200)   ← 218px from CM at t* → SILENT
 //   t=1.0 d=1.0: CM→LB pass concurrent with run
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// Verify (f) — run chaining (extension run)
-// LB→LM pass; LM bounces to CM; LB overlap run R1 (unresolved); LB second run R2
-// (extension of R1); CM→LB pass meeting R2.
+// Verify (f) — run chaining: very wide, OVERLAP SILENT  [re-labeled: coach ruling]
+// LB runs >2 channels from CM at level-crossing (lateralDist=251px). Not an overlap.
 //
 // Expected:
 //   1. the left back plays the left midfielder
 //   2. the left midfielder lays it off to the central midfielder
-//   3. the left back overlaps
-//   4. the left back receives from the central midfielder
+//   3. the central midfielder plays through to the left back  (ACT_THROUGH_BALL)
+//   LB run: SILENT (lateralDist 251px > 130px gap threshold)
 //
 // Layout (team A attacks 'up'):
 //   LB  (150, 400)
@@ -75,7 +76,7 @@ export function run(): void {
 
     doc.actions.push(p1, lbRun, p2);
 
-    printResult('Verify (d) — pass-and-go overlap (FIX 1)', narrate(doc, { register: 'name', debug: true }));
+    printResult('Verify (d) — pass-and-go: wide carrier (OVERLAP must NOT fire)', narrate(doc, { register: 'name', debug: true }));
   }
 
   // ── Verify (e) ─────────────────────────────────────────────────────────────
@@ -97,7 +98,7 @@ export function run(): void {
 
     doc.actions.push(p1, lbRun, p2);
 
-    printResult('Verify (e) — run-meets-pass overlap (FIX 2)', narrate(doc, { register: 'name', debug: true }));
+    printResult('Verify (e) — run-meets-pass: very wide (OVERLAP must NOT fire)', narrate(doc, { register: 'name', debug: true }));
   }
 
   // ── Verify (f) ─────────────────────────────────────────────────────────────
@@ -122,6 +123,6 @@ export function run(): void {
 
     doc.actions.push(p1, p2, lbR1, lbR2, p3);
 
-    printResult('Verify (f) — run chaining (FIX)', narrate(doc, { register: 'name', debug: true }));
+    printResult('Verify (f) — run chaining: very wide (OVERLAP must NOT fire)', narrate(doc, { register: 'name', debug: true }));
   }
 }
