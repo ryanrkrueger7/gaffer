@@ -21,6 +21,7 @@ import { run as runSceneO      } from './demo-scenes/scene-o';
 import { run as runSceneP      } from './demo-scenes/scene-p';
 import { run as runSceneQ      } from './demo-scenes/scene-q';
 import { run as runSceneR      } from './demo-scenes/scene-r';
+import { run as runSceneS      } from './demo-scenes/scene-s';
 
 runSeq1Seq3();
 console.log('\n───────────────────────────────────────────────────────────────\n');
@@ -41,5 +42,6 @@ runSceneO();
 runSceneP();
 runSceneQ();
 runSceneR();
+runSceneS();
 
 console.log('\n───────────────────────────────────────────────────────────────\n');

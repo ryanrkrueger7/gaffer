@@ -3,7 +3,8 @@
 // Predicate translation (FIX 1 — tightened from Tier 1 baseline):
 //   trigger:
 //     (a) actor does NOT own the ball at run.start
-//     (b) distanceToBallTrend is 'closing' — player moves toward the ball
+//     (b) playerMotionTowardBall is 'closing' — player's OWN displacement heads toward
+//         the ball at run.start; the ball's own travel contributes nothing.
 //     (c) run ends within NEAR_BALL_PX of the ball position at run.end
 //         (player actually positions to receive, not just trending closer from far)
 //
@@ -21,7 +22,7 @@
 import type { TermSignature } from './matcher';
 import type { RunAction } from '../../engine/types';
 import { resolveOwnerAtT, resolveBallPosition, resolvePosition } from '../../engine/resolve';
-import { distanceToBallTrend, runVectorVsAttack } from '../primitives';
+import { playerMotionTowardBall, runVectorVsAttack } from '../primitives';
 
 /** Distance threshold (px) — runner must end within this radius of the ball at run.end. */
 const NEAR_BALL_PX = 200;
@@ -42,11 +43,14 @@ export const MOV_CHECK_TO_BALL: TermSignature = {
       return !owns;
     },
 
-    // (c) closing trend — player is getting closer to the ball over the run window
+    // (c) player's own motion is toward the ball — ball's travel contributes nothing.
+    //     Uses playerMotionTowardBall (projection of runner displacement onto runner→ball
+    //     direction at run.start) so a retreating CB isn't narrated as "checks to ball"
+    //     just because an incoming pass closes mutual distance.
     (ctx) => {
       const run = ctx.action as RunAction;
-      const trend = distanceToBallTrend(ctx.doc, ctx.actorId, run);
-      ctx.debug?.(`distanceToBallTrend=${trend}`);
+      const trend = playerMotionTowardBall(ctx.doc, ctx.actorId, run);
+      ctx.debug?.(`playerMotionTowardBall=${trend}`);
       return trend === 'closing';
     },
 

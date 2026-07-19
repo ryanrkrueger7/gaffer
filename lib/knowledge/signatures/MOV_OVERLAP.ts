@@ -83,8 +83,11 @@ export const OVERLAP_LATERAL_GAP_PX = 130;
  *
  * A dead-straight parallel run (angle ≈ 0°) is never an overlap regardless of
  * lateral gap — the runner is moving alongside the carrier, not rounding them.
+ *
+ * Lowered 15→8: live coach overlaps use gentle post-hoc arcs (bend ~12°); scripted
+ * arcs over-curve. Falsification scenes P/Q/G sit at 0–1.2° — still rejected at 8°.
  */
-export const OVERLAP_BEND_MIN_DEG = 15;
+export const OVERLAP_BEND_MIN_DEG = 8;
 import {
   startsBehind,
   pathSide,

@@ -72,9 +72,9 @@ const FLAT_MARGIN_PX = 10; // delta below this is treated as 'flat'
 /**
  * Is the player getting closer to or further from the ball over the run window?
  *
- * Samples player and ball positions at run.start and run.start+run.duration via
- * the engine resolvers. The ball position is the resolved visual position
- * (including possession and in-flight interpolation).
+ * Measures mutual distance change: both the player's motion AND the ball's own
+ * travel contribute to the result. Use `playerMotionTowardBall` when only the
+ * player's movement should count (e.g. MOV_CHECK_TO_BALL).
  */
 export function distanceToBallTrend(
   doc: GafferDocument,
@@ -95,6 +95,46 @@ export function distanceToBallTrend(
   const delta = d1 - d0; // positive = moved away, negative = moved closer
   if (delta < -FLAT_MARGIN_PX) return 'closing';
   if (delta > FLAT_MARGIN_PX) return 'opening';
+  return 'flat';
+}
+
+/**
+ * Is the PLAYER moving toward the ball, measured by the player's own displacement
+ * projected onto the runner→ball direction at run.start?
+ *
+ * Unlike `distanceToBallTrend`, the ball's own travel contributes nothing — only
+ * the runner's physical motion is measured. This prevents a player retreating away
+ * from play from being classified as 'closing' just because a pass travels toward
+ * their side.
+ *
+ * Projection > FLAT_MARGIN_PX → 'closing' (runner moved toward ball).
+ * Projection < −FLAT_MARGIN_PX → 'opening' (runner moved away from ball).
+ */
+export function playerMotionTowardBall(
+  doc: GafferDocument,
+  playerId: string,
+  run: RunAction,
+): 'closing' | 'opening' | 'flat' {
+  const t0 = run.start;
+  const t1 = run.start + run.duration;
+
+  const p0 = resolvePosition(doc, playerId, t0);
+  const p1 = resolvePosition(doc, playerId, t1);
+  const b0 = resolveBallPosition(doc, t0);
+
+  // Unit vector from runner toward the ball at run.start.
+  const toBallDx = b0.x - p0.x;
+  const toBallDy = b0.y - p0.y;
+  const dist = Math.hypot(toBallDx, toBallDy);
+  if (dist < 1) return 'flat'; // runner is already at the ball
+
+  // Project runner displacement onto runner→ball direction.
+  const runDx = p1.x - p0.x;
+  const runDy = p1.y - p0.y;
+  const proj = (runDx * toBallDx + runDy * toBallDy) / dist;
+
+  if (proj > FLAT_MARGIN_PX) return 'closing';
+  if (proj < -FLAT_MARGIN_PX) return 'opening';
   return 'flat';
 }
 
