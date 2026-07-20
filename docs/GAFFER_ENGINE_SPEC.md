@@ -271,6 +271,17 @@ through midfield" for chained lateral progressions. Runs after clause
 generation; wraps/replaces clause groups; term IDs preserved for
 corrections.
 
+**Movement classification (no manual labels):** every run resolves to one
+of: (a) a narrated term (signature match), (b) plain narratable movement
+(no term, but lifecycle-relevant — e.g. the runner receives), or
+(c) silent structural context (matches nothing, receives nothing).
+Category (c) — repositioning, shape-keeping, following play — is inferred
+by falling through all signatures, never coach-labeled. Matcher precision
+(falsification suite) is what keeps (c) clean. Future (Tier 2+,
+"structural preconditions"): silent movements become reasoning context —
+why lanes exist, why switches have targets — and, inverted, what
+generation must produce to make described plays game-like.
+
 ---
 
 ## 7. Deferred (logged, not lost)

@@ -17,7 +17,7 @@ import {
   makeBeat,
 } from './factory';
 import { resolveOwnerAtT, resolvePosition, resolveTargetPoint } from './resolve';
-import type { GafferDocument, PlayerEntity, Region, Frame, Entity, GoalEntity } from './types';
+import type { GafferDocument, PlayerEntity, Region, Frame, Entity, GoalEntity, RunAction } from './types';
 
 export type Tool = 'select' | 'player' | 'ball' | 'cone' | 'minigoal' | 'goal' | 'mannequin' | 'zone' | 'author';
 
@@ -170,6 +170,47 @@ function pushHistory(history: GafferDocument[], doc: GafferDocument): GafferDocu
   return next.length > UNDO_LIMIT ? next.slice(next.length - UNDO_LIMIT) : next;
 }
 
+// ── Pass-meets-run helpers ────────────────────────────────────────────────────
+
+/** Minimum ball flight duration (seconds) — prevents degenerate zero-duration passes. */
+const MIN_FLIGHT_DURATION = 0.3;
+
+/**
+ * Find the receiver's run that is active at or after passStartT.
+ * "Active" means the run has not yet ended: runEnd > passStartT.
+ * Among all viable runs (sorted by start ascending), returns the earliest one —
+ * either already in progress at passStartT or the soonest upcoming.
+ */
+function findActiveRunForPass(
+  doc: GafferDocument,
+  receiverId: string,
+  passStartT: number,
+): RunAction | undefined {
+  const viable = (doc.actions as RunAction[]).filter(
+    (a) => a.kind === 'run' && a.entityId === receiverId &&
+           'x' in a.destination && a.start + a.duration > passStartT,
+  );
+  if (viable.length === 0) return undefined;
+  viable.sort((a, b) => a.start - b.start);
+  return viable[0];
+}
+
+/**
+ * Compute pass duration so the ball arrives exactly when the target run ends.
+ * If the run ends before the ball can arrive (MIN_FLIGHT_DURATION), returns
+ * MIN_FLIGHT_DURATION — ball arrives at the runner's destination (existing behaviour).
+ * Falls back to 0.8s when no run is found.
+ */
+function recomputePassDuration(
+  passStartT: number,
+  targetRun: RunAction | undefined,
+): number {
+  if (!targetRun) return 0.8;
+  const runEnd = targetRun.start + targetRun.duration;
+  if (runEnd <= passStartT + MIN_FLIGHT_DURATION) return MIN_FLIGHT_DURATION;
+  return runEnd - passStartT;
+}
+
 export interface EditorStore {
   document: GafferDocument;
   tool: Tool;
@@ -232,6 +273,9 @@ export interface EditorStore {
   loadDocument: (doc: GafferDocument) => void;
   /** Flip stage.direction and mirror the change into frame.teams. */
   toggleStageDirection: () => void;
+  /** Move a run action's start time (duration preserved). Runs only — rejected for ball actions.
+   *  Clamped to [0, maxActionEnd]. Re-resolves any passes targeting that runner. */
+  setActionStart: (actionId: string, newStart: number) => void;
 }
 
 export const useEditorStore = create<EditorStore>((set) => ({
@@ -422,36 +466,18 @@ export const useEditorStore = create<EditorStore>((set) => ({
 
   addPass: (targetId) =>
     set((state) => {
-      // Relational timing rule: if the target has existing Run(s), align pass to the
-      // most recently authored one (last in array order) so the ball arrives when the
-      // runner reaches their destination.
-      //
-      // Using .find() (first match) would bind to run A when the player has runs A and B,
-      // causing the ball to arrive at T=runA.end while run B is active — run B then plays
-      // back with the ball bound to the player, indistinguishable from a carry.
-      // The correct binding is always to the last-authored run (highest array index).
-      const allTargetRuns = state.document.actions.filter(
-        (a) => a.kind === 'run' && a.entityId === targetId,
-      );
-      const targetRun = allTargetRuns.length > 0
-        ? allTargetRuns[allTargetRuns.length - 1]
-        : undefined;
-
-      const intendedStart = targetRun ? targetRun.start : maxActionEnd(state.document);
-
-      // Timeline integrity: a pass may never start before its passer has possession.
-      // The passer acquires the ball at the end of the sequence's last ball event (pass/carry).
-      // If the runner's window would require an earlier departure, clamp the start to that
-      // time; adjust duration so the ball still arrives at/near the run's resolved end-point.
-      // If the run has already ended by the clamped start, fall back to a default duration
-      // (ball arrives at the runner's destination).
+      // Timeline integrity: pass departs as soon as the passer has possession.
+      // The passer acquires the ball at the end of the last ball event (pass/carry).
       const lastBallEventEnd = state.document.actions
         .filter(a => a.kind === 'pass' || a.kind === 'carry')
         .reduce((max, a) => Math.max(max, a.start + a.duration), 0);
-      const startT = Math.max(intendedStart, lastBallEventEnd);
+      const startT = lastBallEventEnd; // pass departs the moment passer has possession
 
-      const runEnd = targetRun ? targetRun.start + targetRun.duration : startT + 0.8;
-      const duration = runEnd > startT ? runEnd - startT : 0.8;
+      // Find the receiver's run that is active at or after the pass departure.
+      // Uses temporal proximity rather than array-insertion order, so strip-anchored
+      // runs (re-timed via setActionStart) are resolved correctly.
+      const targetRun = findActiveRunForPass(state.document, targetId, startT);
+      const duration = recomputePassDuration(startT, targetRun);
 
       // Passer is derived from ownership at the CLAMPED start — whoever legally
       // holds the ball when this pass departs, not at the unclamped runner window.
@@ -733,6 +759,40 @@ export const useEditorStore = create<EditorStore>((set) => ({
         // After folding, clear the "just created" marker so a second curve on the
         // same action pushes a normal undo entry.
         ...(isJustCreated ? { lastCreatedActionId: null, lastCreatedUndoDepth: 0 } : {}),
+      };
+    }),
+
+  setActionStart: (actionId, newStart) =>
+    set((state) => {
+      const action = state.document.actions.find(a => a.id === actionId);
+      if (!action || action.kind !== 'run') return state; // runs only
+
+      const clampedStart = Math.max(0, Math.min(maxActionEnd(state.document), newStart));
+
+      // Build doc with the run at its new position first.
+      const docWithMovedRun: GafferDocument = {
+        ...state.document,
+        actions: state.document.actions.map(a =>
+          a.id === actionId ? { ...a, start: clampedStart } : a,
+        ),
+      };
+
+      // Re-resolve all passes that target this runner: recompute duration so ball
+      // still arrives at the run's (now re-anchored) end.
+      const updatedActions = docWithMovedRun.actions.map(a => {
+        if (
+          a.kind !== 'pass' ||
+          !('entityId' in a.target) ||
+          a.target.entityId !== action.entityId
+        ) return a;
+        const activeRun = findActiveRunForPass(docWithMovedRun, action.entityId, a.start);
+        return { ...a, duration: recomputePassDuration(a.start, activeRun) };
+      });
+
+      return {
+        document: { ...docWithMovedRun, actions: updatedActions },
+        undoHistory: pushHistory(state.undoHistory, state.document),
+        canUndo: true,
       };
     }),
 }));

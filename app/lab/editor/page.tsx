@@ -31,6 +31,7 @@ import {
   BoxSelect,
 } from 'lucide-react';
 import { useEditorStore, maxActionEnd, getActionChordEndpoints } from '@/lib/engine/store';
+import BeatStrip from '@/components/engine/BeatStrip';
 import type { Tool } from '@/lib/engine/store';
 import { ROLE_ENTRIES, inferPosition, INFER_CONFIDENCE_THRESHOLD } from '@/lib/knowledge';
 import { saveDoc, listDocs, fetchDoc, renameDoc, deleteDoc } from '@/app/actions/documents';
@@ -329,6 +330,7 @@ export default function EditorPage() {
     renameDocument,
     undo,
     canUndo,
+    setActionStart,
   } = useEditorStore();
 
   // ── Playhead ────────────────────────────────────────────────────────────────
@@ -1357,6 +1359,17 @@ export default function EditorPage() {
             style={{ flex: 1, accentColor: '#22c55e', cursor: 'pointer', height: 18 }}
           />
         </div>
+
+        {/* Beat strip — run clips draggable; ball-action clips fixed */}
+        {sortedActions.length > 0 && (
+          <BeatStrip
+            actions={sortedActions}
+            currentT={t}
+            totalDuration={totalDuration}
+            labelFor={(id) => entityLabel(doc, id)}
+            onRunStartChange={setActionStart}
+          />
+        )}
 
         {/* Playback controls */}
         <div className="w-[800px] flex items-center gap-2">
