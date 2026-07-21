@@ -116,6 +116,8 @@ export interface RunAction extends ActionBase {
   destination: RunDestination;
   path: Path;
   relTiming?: RelTiming;
+  /** Shared UUID for runs authored together in one multi-player gesture. Absent on solo runs. */
+  groupId?: string;
 }
 
 export interface CarryAction extends ActionBase {

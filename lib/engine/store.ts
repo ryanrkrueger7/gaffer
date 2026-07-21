@@ -174,6 +174,8 @@ function pushHistory(history: GafferDocument[], doc: GafferDocument): GafferDocu
 
 /** Minimum ball flight duration (seconds) — prevents degenerate zero-duration passes. */
 const MIN_FLIGHT_DURATION = 0.3;
+/** Maximum ball flight duration (seconds) — prevents multi-second stretches when a run is anchored early. */
+export const MAX_FLIGHT_DURATION = 3.0;
 
 /**
  * Find the receiver's run that is active at or after passStartT.
@@ -197,8 +199,11 @@ function findActiveRunForPass(
 
 /**
  * Compute pass duration so the ball arrives exactly when the target run ends.
- * If the run ends before the ball can arrive (MIN_FLIGHT_DURATION), returns
- * MIN_FLIGHT_DURATION — ball arrives at the runner's destination (existing behaviour).
+ * Floor: MIN_FLIGHT_DURATION — when the run ends before MIN_FLIGHT_DURATION elapses,
+ *   ball arrives at the runner's destination.
+ * Ceiling: MAX_FLIGHT_DURATION — when the run is anchored so early that meeting its
+ *   end would require a very long flight, the ball instead meets the runner at their
+ *   resolved position at passStartT + MAX_FLIGHT_DURATION (mid-run).
  * Falls back to 0.8s when no run is found.
  */
 function recomputePassDuration(
@@ -208,13 +213,15 @@ function recomputePassDuration(
   if (!targetRun) return 0.8;
   const runEnd = targetRun.start + targetRun.duration;
   if (runEnd <= passStartT + MIN_FLIGHT_DURATION) return MIN_FLIGHT_DURATION;
-  return runEnd - passStartT;
+  return Math.min(runEnd - passStartT, MAX_FLIGHT_DURATION);
 }
 
 export interface EditorStore {
   document: GafferDocument;
   tool: Tool;
   selectedEntityId: string | null;
+  /** Multi-select set for concurrent run authoring. Populated by shift+click in author mode. */
+  selectedEntityIds: string[];
   pendingSourceId: string | null;
   undoHistory: GafferDocument[];
   canUndo: boolean;
@@ -233,6 +240,7 @@ export interface EditorStore {
 
   setTool: (tool: Tool) => void;
   setSelected: (id: string | null) => void;
+  setSelectedEntities: (ids: string[]) => void;
   setPendingSource: (id: string | null) => void;
   addPlayer: (x: number, y: number) => void;
   /**
@@ -250,6 +258,8 @@ export interface EditorStore {
   addPass: (targetId: string) => void;
   /** Run added starting at startT. */
   addRun: (playerId: string, x: number, y: number, startT: number) => void;
+  /** Author N concurrent runs from a multi-select gesture. All share start, duration=1.5, and a new groupId. */
+  addRunGroup: (runs: { playerId: string; x: number; y: number }[], startT: number) => void;
   /** Carrier = end-of-sequence owner; appends to sequence. No-op if no end-of-sequence owner. */
   addCarry: (x: number, y: number) => void;
   /** Carry targeting a static entity (goal, mini-goal, zone). Carrier = end-of-sequence owner. */
@@ -274,14 +284,22 @@ export interface EditorStore {
   /** Flip stage.direction and mirror the change into frame.teams. */
   toggleStageDirection: () => void;
   /** Move a run action's start time (duration preserved). Runs only — rejected for ball actions.
-   *  Clamped to [0, maxActionEnd]. Re-resolves any passes targeting that runner. */
+   *  Clamped to [0, maxActionEnd]. If the run belongs to a group, all group members move together.
+   *  Re-resolves any passes targeting any moved runner.
+   *  History is pushed ONCE per drag sequence (first call); subsequent calls within the same
+   *  drag reuse the existing history entry. Call commitDrag() on pointer-up to close the sequence. */
   setActionStart: (actionId: string, newStart: number) => void;
+  /** Close the current drag sequence so the next setActionStart call opens a new undo entry. */
+  commitDrag: () => void;
+  /** Tracks which action is currently being dragged — null between drag sequences. Internal. */
+  lastMovedActionId: string | null;
 }
 
 export const useEditorStore = create<EditorStore>((set) => ({
   document: makeInitialDoc(),
   tool: 'select',
   selectedEntityId: null,
+  selectedEntityIds: [],
   pendingSourceId: null,
   undoHistory: [],
   canUndo: false,
@@ -289,13 +307,16 @@ export const useEditorStore = create<EditorStore>((set) => ({
   lastCreatedActionId: null,
   lastCreatedUndoDepth: 0,
   lastCreatedEntityId: null,
+  lastMovedActionId: null,
   placementTeam: 'A',
   placementIsGk: false,
   placementSize: 'medium',
 
   setTool: (tool) => set({ tool, pendingSourceId: null }),
   setSelected: (id) => set({ selectedEntityId: id }),
+  setSelectedEntities: (ids) => set({ selectedEntityIds: ids }),
   setPendingSource: (id) => set({ pendingSourceId: id }),
+  commitDrag: () => set({ lastMovedActionId: null }),
   setPlacementTeam: (team) => set({ placementTeam: team }),
   setPlacementIsGk: (v) => set({ placementIsGk: v }),
   setPlacementSize: (size) => set({ placementSize: size }),
@@ -527,6 +548,34 @@ export const useEditorStore = create<EditorStore>((set) => ({
       };
     }),
 
+  addRunGroup: (runs, startT) =>
+    set((state) => {
+      if (runs.length === 0) return state;
+      const groupId = crypto.randomUUID();
+      const newRuns = runs.map(({ playerId, x, y }) => ({
+        ...makeRun({
+          entityId: playerId,
+          beatId: DEFAULT_BEAT_ID,
+          destination: { x, y },
+          start: startT,
+          duration: 1.5,
+        }),
+        groupId,
+      }));
+      const newHistory = pushHistory(state.undoHistory, state.document);
+      return {
+        document: {
+          ...state.document,
+          actions: [...state.document.actions, ...newRuns],
+        },
+        undoHistory: newHistory,
+        canUndo: true,
+        pendingSourceId: null,
+        lastCreatedActionId: newRuns[newRuns.length - 1].id,
+        lastCreatedUndoDepth: newHistory.length,
+      };
+    }),
+
   addCarry: (x, y) =>
     set((state) => {
       const startT = maxActionEnd(state.document);
@@ -661,11 +710,13 @@ export const useEditorStore = create<EditorStore>((set) => ({
         undoHistory: history,
         canUndo: history.length > 0,
         selectedEntityId: null,
+        selectedEntityIds: [],
         pendingSourceId: null,
         selectedActionId: null,
         lastCreatedActionId: null,
         lastCreatedUndoDepth: 0,
         lastCreatedEntityId: null,
+        lastMovedActionId: null,
       };
     }),
 
@@ -684,6 +735,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       document: doc,
       tool: 'select',
       selectedEntityId: null,
+      selectedEntityIds: [],
       pendingSourceId: null,
       undoHistory: [],
       canUndo: false,
@@ -691,6 +743,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       lastCreatedActionId: null,
       lastCreatedUndoDepth: 0,
       lastCreatedEntityId: null,
+      lastMovedActionId: null,
     }),
 
   toggleStageDirection: () =>
@@ -768,31 +821,46 @@ export const useEditorStore = create<EditorStore>((set) => ({
       if (!action || action.kind !== 'run') return state; // runs only
 
       const clampedStart = Math.max(0, Math.min(maxActionEnd(state.document), newStart));
+      const groupId = action.groupId;
 
-      // Build doc with the run at its new position first.
-      const docWithMovedRun: GafferDocument = {
+      // Move this run and all group members (if grouped) to the new start.
+      const docWithMovedRuns: GafferDocument = {
         ...state.document,
-        actions: state.document.actions.map(a =>
-          a.id === actionId ? { ...a, start: clampedStart } : a,
-        ),
+        actions: state.document.actions.map(a => {
+          if (a.kind !== 'run') return a;
+          const shouldMove = groupId ? a.groupId === groupId : a.id === actionId;
+          return shouldMove ? { ...a, start: clampedStart } : a;
+        }),
       };
 
-      // Re-resolve all passes that target this runner: recompute duration so ball
-      // still arrives at the run's (now re-anchored) end.
-      const updatedActions = docWithMovedRun.actions.map(a => {
-        if (
-          a.kind !== 'pass' ||
-          !('entityId' in a.target) ||
-          a.target.entityId !== action.entityId
-        ) return a;
-        const activeRun = findActiveRunForPass(docWithMovedRun, action.entityId, a.start);
+      // Collect entity IDs of all moved runs — passes targeting any of them need re-resolution.
+      const movedEntityIds = new Set(
+        docWithMovedRuns.actions
+          .filter(a => a.kind === 'run' && (groupId ? a.groupId === groupId : a.id === actionId))
+          .map(a => a.entityId),
+      );
+
+      const updatedActions = docWithMovedRuns.actions.map(a => {
+        if (a.kind !== 'pass' || !('entityId' in a.target) || !movedEntityIds.has(a.target.entityId)) return a;
+        const activeRun = findActiveRunForPass(docWithMovedRuns, a.target.entityId, a.start);
         return { ...a, duration: recomputePassDuration(a.start, activeRun) };
       });
 
+      // FIX 1: push the PRE-DRAG state to history exactly ONCE per drag sequence.
+      // On the first call (actionId !== lastMovedActionId), snapshot state.document.
+      // On subsequent calls within the same drag, skip the push so undo always
+      // reverts the entire drag in one step — not just the last pointer-move.
+      // commitDrag() (called on pointerUp) resets lastMovedActionId to null.
+      const isNewDrag = actionId !== state.lastMovedActionId;
+      const newHistory = isNewDrag
+        ? pushHistory(state.undoHistory, state.document)
+        : state.undoHistory;
+
       return {
-        document: { ...docWithMovedRun, actions: updatedActions },
-        undoHistory: pushHistory(state.undoHistory, state.document),
-        canUndo: true,
+        document: { ...docWithMovedRuns, actions: updatedActions },
+        undoHistory: newHistory,
+        canUndo: newHistory.length > 0,
+        lastMovedActionId: actionId,
       };
     }),
 }));

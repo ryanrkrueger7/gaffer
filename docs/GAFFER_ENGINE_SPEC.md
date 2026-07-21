@@ -300,6 +300,7 @@ generation must produce to make described plays game-like.
 - Identity field names are **verified** (§2.1) — no reconciliation needed. `positionId` (UI) vs `inferredPositionId` (inference-only) are clean.
 - `lib/knowledge` export surface is **mostly clean**: the editor imports `inferPosition` from the `@/lib/knowledge` index (good). `formations.ts` is not re-exported from the index (used internally by `positionInference`) — fine unless a head needs `getFormation` directly, in which case add it to the index. `zones.ts` has geometry as descriptive strings only (no runtime geometry-testing function yet) - zones.ts descriptive-only line resolved-by-§6.4.; `scoring.ts` is descriptive only (no resolution logic) — both fine for narration's first milestone, which doesn't need them.
 - demo-suite inventory reconciliation (24→19 rename/merge audit).
+- Authoring-surface v2 (step editor): the beat strip is currently a debug readout serving as primary UI — undifferentiated clips, no concurrency display, no relational/edit affordances. Needs a design pass: it is the same surface a coach will use to step through and edit AI-generated diagrams (correction-as-editing). Concurrency grouping, run-vs-ball distinction, per-clip retime/reassign/delete, and re-narrate-on-edit. Scheduled after concurrent grouping, before intent-primitives.
 
 ---
 

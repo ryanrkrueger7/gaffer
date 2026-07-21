@@ -298,6 +298,7 @@ export default function EditorPage() {
     document: doc,
     tool,
     selectedEntityId,
+    selectedEntityIds,
     selectedActionId,
     lastCreatedActionId,
     lastCreatedEntityId,
@@ -306,6 +307,7 @@ export default function EditorPage() {
     placementSize,
     setTool,
     setSelected,
+    setSelectedEntities,
     selectAction,
     setActionCurve,
     setPlacementTeam,
@@ -322,6 +324,7 @@ export default function EditorPage() {
     moveEntity,
     addPass,
     addRun,
+    addRunGroup,
     addCarry,
     updateAction,
     deleteAction,
@@ -331,6 +334,7 @@ export default function EditorPage() {
     undo,
     canUndo,
     setActionStart,
+    commitDrag,
   } = useEditorStore();
 
   // ── Playhead ────────────────────────────────────────────────────────────────
@@ -356,6 +360,15 @@ export default function EditorPage() {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const identityEscapedRef = useRef(false);
+
+  // Shift-key state — used by author-mode click to toggle multi-select.
+  const shiftRef = useRef(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { shiftRef.current = e.shiftKey; };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKey);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKey); };
+  }, []);
 
   // Zone drawing — anchor set on mousedown, cleared on mouseup.
   const [zoneAnchor, setZoneAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -777,9 +790,24 @@ export default function EditorPage() {
         // Entity click always clears action selection — only one can be active at a time.
         selectAction(null);
         break;
-      case 'author':
-        setSelected(hitId);
+      case 'author': {
+        if (hitId && doc.entities.find((e) => e.id === hitId)?.kind === 'player' && shiftRef.current) {
+          // Shift+click: toggle into multi-select for concurrent run authoring.
+          // On first shift+click, seed the selection with the current primary selection.
+          if (selectedEntityIds.includes(hitId)) {
+            setSelectedEntities(selectedEntityIds.filter(id => id !== hitId));
+          } else {
+            const base = selectedEntityIds.length === 0 && selectedEntityId
+              ? [selectedEntityId, hitId]
+              : [...selectedEntityIds, hitId];
+            setSelectedEntities(base);
+          }
+        } else {
+          setSelected(hitId);
+          setSelectedEntities([]);
+        }
         break;
+      }
 
       case 'player':
         if (hitId) {
@@ -893,7 +921,23 @@ export default function EditorPage() {
         } else {
           const entity = doc.entities.find((e) => e.id === id);
           if (entity?.kind === 'player') {
-            addRun(id, x, y, tRef.current);
+            if (selectedEntityIds.length > 1 && selectedEntityIds.includes(id)) {
+              // Multi-select gesture: apply drag delta from this player to all selected players.
+              const sourceSnap = boardState.entities.find(e => e.id === id);
+              if (sourceSnap) {
+                const dx = x - sourceSnap.x;
+                const dy = y - sourceSnap.y;
+                const runs = selectedEntityIds
+                  .map(pid => {
+                    const snap = boardState.entities.find(e => e.id === pid);
+                    return snap ? { playerId: pid, x: snap.x + dx, y: snap.y + dy } : null;
+                  })
+                  .filter((r): r is { playerId: string; x: number; y: number } => r !== null);
+                addRunGroup(runs, tRef.current);
+              }
+            } else {
+              addRun(id, x, y, tRef.current);
+            }
           }
         }
         break;
@@ -1368,6 +1412,7 @@ export default function EditorPage() {
             totalDuration={totalDuration}
             labelFor={(id) => entityLabel(doc, id)}
             onRunStartChange={setActionStart}
+            onRunDragEnd={commitDrag}
           />
         )}
 
