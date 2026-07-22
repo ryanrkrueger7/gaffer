@@ -124,6 +124,32 @@ full / half / blank. Set pieces default to half.
 `derived` values as the scene changes; derivation NEVER touches an `explicit`
 value; any coach edit in the Frame UI marks that field explicit.
 
+### 3.7 Structured teams — formations, home positions, the defensive line (FOUNDATION — next build)
+
+Multi-team placement already works: a second team color places and
+position-inference mirrors attack direction correctly (a yellow LB in the
+RW region infers RW for a down-attacking team). What does NOT exist:
+opponents carrying STRUCTURE the matcher can reason against. This is the
+next foundation.
+
+The Frame gains, per team:
+- **Formation + home positions.** A team can be seeded from a formation
+  (the coach sets up the situation, not each marker). Each player has a
+  home-base position (formation slot) distinct from their current
+  position. Current position is a function of home + ball + play; home is
+  the anchor runs and shifts are measured against.
+- **The defensive line.** The deepest outfield line of a team is a
+  first-class computed reference — retiring the `beyondFurthestTeammate`
+  proxy currently standing in for it (§6.4). "In behind" = beyond the
+  opponent's last line. "Between the lines" = between their mid and back
+  lines. Channels/gaps = the spaces between specific defenders on a line.
+
+This structure is the reference frame that disambiguates runs and passes:
+a through ball into the channel, a run in behind, goal-side, marking, and
+the entire defensive/relational vocabulary (§10 dictionary families C+D)
+are dark without it. Design the structured-team contract with the driving
+chat before building; freeze here.
+
 **Derivation rules (v1, deliberately simple):**
 - First team placed → attackingDirection 'up'; second team → 'down'. Set at first placement.
 - fieldExtent 'full' seeds two real goal entities (top + bottom); 'half' seeds one (top);
@@ -282,6 +308,41 @@ by falling through all signatures, never coach-labeled. Matcher precision
 why lanes exist, why switches have targets — and, inverted, what
 generation must produce to make described plays game-like.
 
+### 6.6 Run-intent layer — the atomic foundation under named terms (ARCHITECTURE PIVOT)
+
+Learned from building the first 11 signatures: named movement terms
+(overlap, third-man, one-two) are NOT peer patterns to match top-down.
+They are COMPOSITIONS of lower-level run INTENTS plus geometry. Overlap
+and third-man "collided" (both firing on one run) because they are two
+names for a run whose intents were {support, go-around, receive-later} —
+they were never competitors.
+
+**A run's meaning is its intent(s).** Build bottom-up: every run resolves
+to one or more intents computed from its geometry relative to ball,
+teammates, and opponents (§3.7):
+- toward-ball / away-from-ball (projection-based, already built for check)
+- in-behind-line (needs the last line, §3.7)
+- into-space / clear-out (vacating, drawing)
+- support (angled/underneath, becoming an option)
+- draw-defender (needs opponents)
+- hold-width / hold-line
+
+Named terms are then defined as intent-compositions + constraints ("term =
+these primitives in this relationship" — the model the coach specified).
+The existing 11 signatures get REBUILT as intent-compositions rather than
+standalone geometric matchers. This is what makes runs compose instead of
+compete, and it is the layer that lets the soft descriptors the coach
+values most ("checks away," "drags a man," "supports underneath,"
+"creates a 2v1") become first-class — an action understood in context,
+not a shape matched to a label.
+
+Contradictions (the dictionary's never-co-occurs column) operate at the
+INTENT level: some intents cannot co-occur on one run (toward-ball +
+in-behind), some cannot follow each other in a possession. This is the
+"narrow the universe of the next possibility" safety net the coach
+described — built as intent constraints, feeding both narration accuracy
+now and text→model controllability later.
+
 ---
 
 ## 7. Deferred (logged, not lost)
@@ -292,6 +353,12 @@ generation must produce to make described plays game-like.
 - Goal entity orientation/rotation (goals currently always face north-south; needed only if horizontal field orientation is ever supported).
 - Mini-goal-placement-as-regime-cue derivation (placing mini-goals proposes multi-directional regime + unique-label mode; add as a derivation rule on top of the *Source machinery).
 - Tier 2 one-two defender-beating condition; goal-relevant composition ("plays him through on goal" when the through ball's receiver is bearing on goal in the attacking third)
+- Long-horizon vision (logged, not scoped): text→model generation seeded
+  by the dictionary + correction log; a formation/home-position system so
+  coaches set up situations by description; video→diagram+narration off a
+  mature play universe; self-improving recognition from the correction
+  dataset. These motivate the architecture (intent layer, bidirectional
+  dictionary) but are NOT current builds.
 
 ---
 
@@ -324,6 +391,28 @@ app/… editor           # authoring surface (Zustand store, gestures, toolkit, 
 app/… engine proof     # frozen reference route — do not modify
 docs/GAFFER_ENGINE_SPEC.md  # this document
 ```
+
+### Dictionary term families (the ~70-term glossary sorts into four kinds
+needing different machinery):
+- **A. Ball-event terms** (through ball, switch, cross, layoff, long ball,
+  driven/clipped) — properties of a pass, mostly geometric. Mostly built.
+- **B. Off-ball movement terms** (check, overlap, in-behind, third-man,
+  drop-in, blindside, curved, peel, ghost, near/back-post) — properties
+  of a run, rebuilt as intent-compositions (§6.6).
+- **C. Defensive terms** (jockey, press, cover, screen, intercept, force
+  in/out, track, drop-off) — REQUIRE opponents + structure (§3.7). None
+  built.
+- **D. Relational/spatial state** (half-space, pocket, last line,
+  goal-side, overload, ball-side, thirds, zone 14) — not events; the
+  COORDINATE SYSTEM other terms reference. Phrase-bearing when the coach
+  invokes them, silent-reference otherwise. Many are computed primitives,
+  not signatures.
+
+The glossary is bidirectional infrastructure: diagram→narration now, and
+narration→diagram later (aliases like "give-and-go / wall pass / bounce"
+are text→model generation inputs, not narration outputs — tag
+accordingly). The same play is describably many ways; the dictionary is
+the web of equivalences and contradictions that makes that tractable.
 
 ---
 
